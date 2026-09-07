@@ -37,6 +37,7 @@ linters:
     - goconst # константы
     - varnamelen # длина имён переменных
     - noinlineerr # inline обработка ошибок
+    - testifylint # исправления тестов с assert.*
 
   exclusions:
     paths:
