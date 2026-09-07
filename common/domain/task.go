@@ -16,6 +16,29 @@ const (
 	TaskCancelled  TaskStatus = "CANCELLED"
 )
 
+func (s TaskStatus) String() string {
+	switch s {
+	case TaskPending:
+		return "PENDING"
+	case TaskReady:
+		return "READY"
+	case TaskDispatched:
+		return "DISPATCHED"
+	case TaskRunning:
+		return "RUNNING"
+	case TaskSucceeded:
+		return "SUCCEEDED"
+	case TaskFailed:
+		return "FAILED"
+	case TaskRetrying:
+		return "RETRYING"
+	case TaskCancelled:
+		return "CANCELLED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // Task — узел графа выполнения (DAG node)
 type Task struct {
 	ID           string
