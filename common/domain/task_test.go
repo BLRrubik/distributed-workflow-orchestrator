@@ -10,6 +10,7 @@ func TestTaskStatus_String(t *testing.T) {
 	}{
 		{name: "PENDING", t: TaskPending, want: "PENDING"},
 		{name: "DISPATCHED", t: TaskDispatched, want: "DISPATCHED"},
+		{name: "READY", t: TaskReady, want: "READY"},
 		{name: "RUNNING", t: TaskRunning, want: "RUNNING"},
 		{name: "SUCCEEDED", t: TaskSucceeded, want: "SUCCEEDED"},
 		{name: "FAILED", t: TaskFailed, want: "FAILED"},
