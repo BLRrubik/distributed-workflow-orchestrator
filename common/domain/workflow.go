@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// WorkflowStatus — состояние графа целиком
+// WorkflowStatus — состояние графа целиком.
 type WorkflowStatus string
 
 const (
@@ -30,7 +30,7 @@ func (s WorkflowStatus) String() string {
 	}
 }
 
-// Workflow — DAG задач
+// Workflow — DAG задач.
 type Workflow struct {
 	ID        string
 	TenantID  string

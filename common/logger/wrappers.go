@@ -35,15 +35,18 @@ func UInt32(key string, data uint32) slog.Attr {
 
 func Other(fields ...string) slog.Attr {
 	var str strings.Builder
+
 	if len(fields)%2 != 0 {
 		return slog.String("other", strings.Join(fields, ", "))
 	}
 
 	str.Grow(20 * len(fields))
+
 	for i := 0; i+1 < len(fields); i += 2 {
 		str.WriteString(fields[i])
 		str.WriteString(": ")
 		str.WriteString(fields[i+1])
+
 		if i+2 < len(fields) {
 			str.WriteString(", ")
 		}

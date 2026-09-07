@@ -17,6 +17,7 @@ func TestNewAppContext(t *testing.T) {
 	if appCtx == nil {
 		t.Fatal("NewAppContext returned nil")
 	}
+
 	if appCtx.Context != baseCtx {
 		t.Error("embedded context.Context mismatch")
 	}
@@ -59,6 +60,7 @@ func TestAppContext_ImplementsContext(t *testing.T) {
 	default:
 		t.Error("expected Done() channel to be closed after cancel")
 	}
+
 	if appCtx.Err() != stdcontext.Canceled {
 		t.Errorf("Err() = %v, want %v", appCtx.Err(), stdcontext.Canceled)
 	}
@@ -66,6 +68,7 @@ func TestAppContext_ImplementsContext(t *testing.T) {
 
 func TestAppContext_ValuePropagation(t *testing.T) {
 	type ctxKey string
+
 	const key ctxKey = "test-key"
 
 	baseCtx := stdcontext.WithValue(stdcontext.Background(), key, "test-value")

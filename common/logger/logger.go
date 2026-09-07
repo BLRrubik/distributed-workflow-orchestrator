@@ -34,7 +34,7 @@ type Logger struct {
 }
 
 func New(level LogLevel, isDev bool) *Logger {
-	handler := tint.NewHandler(os.Stdout, &tint.Options{
+	handler := tint.NewTextHandler(os.Stdout, &tint.Options{
 		Level: toSlogLevel(level),
 	})
 

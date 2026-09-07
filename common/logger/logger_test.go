@@ -39,10 +39,12 @@ func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 
 	orig := os.Stdout
+
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe() error = %v", err)
 	}
+
 	os.Stdout = w
 
 	fn()
@@ -50,6 +52,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err = w.Close(); err != nil {
 		t.Fatalf("w.Close() error = %v", err)
 	}
+
 	os.Stdout = orig
 
 	var buf bytes.Buffer
@@ -65,6 +68,7 @@ func TestNew_NotNil(t *testing.T) {
 	if log == nil {
 		t.Fatal("New() returned nil")
 	}
+
 	if log.Logger == nil {
 		t.Fatal("New().Logger is nil")
 	}
@@ -85,9 +89,11 @@ func TestLogger_JSONHandler_WritesValidJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
 	}
+
 	if parsed["msg"] != "hello" {
 		t.Errorf("msg = %v, want %q", parsed["msg"], "hello")
 	}
+
 	if parsed["k"] != "v" {
 		t.Errorf("k = %v, want %q", parsed["k"], "v")
 	}
@@ -103,9 +109,11 @@ func TestLogger_DevHandler_WritesNonJSON(t *testing.T) {
 	if out == "" {
 		t.Fatal("expected output, got none")
 	}
+
 	if json.Valid([]byte(out)) {
 		t.Errorf("expected non-JSON tint output, got JSON: %s", out)
 	}
+
 	if !strings.Contains(out, "hello") {
 		t.Errorf("output = %q, want it to contain %q", out, "hello")
 	}
@@ -122,9 +130,11 @@ func TestLogger_LevelFiltering(t *testing.T) {
 	if strings.Contains(out, "debug msg") {
 		t.Errorf("expected DEBUG message to be filtered out, got: %s", out)
 	}
+
 	if strings.Contains(out, "info msg") {
 		t.Errorf("expected INFO message to be filtered out, got: %s", out)
 	}
+
 	if !strings.Contains(out, "warn msg") {
 		t.Errorf("expected WARN message to be logged, got: %s", out)
 	}

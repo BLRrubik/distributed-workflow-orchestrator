@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// TaskStatus — конечный автомат состояния задачи
+// TaskStatus — конечный автомат состояния задачи.
 type TaskStatus string
 
 const (
@@ -39,7 +39,7 @@ func (s TaskStatus) String() string {
 	}
 }
 
-// Task — узел графа выполнения (DAG node)
+// Task — узел графа выполнения (DAG node).
 type Task struct {
 	ID           string
 	WorkflowID   string
