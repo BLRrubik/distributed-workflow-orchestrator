@@ -18,7 +18,7 @@ func TestNewAppContext(t *testing.T) {
 		t.Fatal("NewAppContext returned nil")
 	}
 
-	if appCtx.Context != baseCtx {
+	if appCtx.GetContext() != baseCtx {
 		t.Error("embedded context.Context mismatch")
 	}
 }

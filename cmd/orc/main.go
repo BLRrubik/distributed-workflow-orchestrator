@@ -39,4 +39,8 @@ func main() {
 	if err = eng.OnTaskCompleted(ctx, workflowID, "test", domain.TaskResult{Error: ""}); err != nil {
 		panic(err)
 	}
+
+	if err = eng.OnTaskCompleted(ctx, workflowID, "deploy", domain.TaskResult{Error: ""}); err != nil {
+		panic(err)
+	}
 }

@@ -29,6 +29,8 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.AppContext, wf *domain.Workf
 	ctx.GetLogger().Info("submitting workflow", logger.String("workflow_id", wf.ID))
 	e.workflows[wf.ID] = wf
 
+	e.markReadyTasks(ctx, wf)
+
 	return wf.ID, nil
 }
 
@@ -49,9 +51,17 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, tas
 	}
 
 	task.Status = domain.TaskSucceeded
+	task.Result = &result
 
-	ctx.GetLogger().Info("task completed", logger.String("task", wf.ID))
+	ctx.GetLogger().Info("task succeeded", logger.String("task", task.ID))
 
+	e.markReadyTasks(ctx, wf)
+
+	return nil
+}
+
+// markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
+func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workflow) {
 	for _, readyTaskID := range e.recomputeReadyTasks(wf) {
 		readyTask, ok := wf.Tasks[readyTaskID]
 		if !ok {
@@ -60,12 +70,14 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, tas
 			continue
 		}
 
+		if readyTask.Status == domain.TaskReady {
+			continue
+		}
+
 		readyTask.Status = domain.TaskReady
 
 		ctx.GetLogger().Info("task ready", logger.String("task", readyTask.ID))
 	}
-
-	return nil
 }
 
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач.
