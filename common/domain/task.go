@@ -57,7 +57,26 @@ type Task struct {
 	UpdatedAt    time.Time
 }
 
-// TaskSpec — абстракция типа задачи. Начните с одного типа (Shell), потом добавите HTTP/gRPC.
+func (t *Task) IsFinished() bool {
+	return t.Status == TaskSucceeded || t.Status == TaskFailed || t.Status == TaskCancelled
+}
+
+func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
+	for _, dep := range t.DependsOn {
+		task, ok := wf.Tasks[dep]
+		if !ok {
+			continue
+		}
+
+		if !task.IsFinished() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// TaskSpec — абстракция типа задачи.
 type TaskSpec struct {
 	Type    string            // "shell" | "http" | "webhook"
 	Payload map[string]string // например {"cmd": "echo hello"} или {"url": "...", "method": "POST"}
