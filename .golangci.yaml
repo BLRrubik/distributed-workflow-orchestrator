@@ -1,0 +1,93 @@
+run:
+  timeout: 5m
+  modules-download-mode: vendor
+  tests: true
+output:
+  formats: colored-line-number
+issues:
+  exclude:
+    - Using the variable on range scope .* in function literal
+  exclude-dirs:
+    - ansible
+    - charts
+    - deploy
+    - generator
+    - docs
+    - vendor
+
+linters:
+  enable-all: true
+  disable:
+    - depguard
+    - containedctx
+    - musttag
+    - varnamelen
+    - tagalign
+    - protogetter # просит добавить везде getter
+    - perfsprint # много исправлений fmt.Sprintf
+    - testifylint # много исправлений тестов с assert.*
+    - paralleltest
+    - wrapcheck
+    - testpackage
+    - tagliatelle
+    - wsl
+    - nonamedreturns
+    - ireturn
+    - interfacebloat
+    - gochecknoglobals
+    - exhaustive
+    - exhaustruct
+    - maintidx
+    - nestif
+    - gocognit
+    - gochecknoinits
+    # need to enable
+    - dupl
+    - godox
+    - err113
+    - mnd
+
+linters-settings:
+  depguard:
+    rules:
+      main:
+        allow:
+          - $gostd
+          - git.wildberries.ru
+          - github.com
+          - golang.org
+          - google.golang.org
+          - gopkg.in
+        deny:
+          - pkg: "emperror.dev/errors"
+            desc: should be replaced by "github.com/pkg/errors"
+          - pkg: "encoding/json"  # <-- запрещаем encoding/json
+            desc: "use 'github.com/json-iterator/go' for better performance"
+  revive:
+    rules:
+      - name: unexported-return
+        disabled: true
+  misspell:
+    locale: US
+  gci:
+    sections:
+      - Standard
+      - Default
+      - Prefix(github.com/blrrubik/distributed-workflow-orchestrator)
+  lll:
+    line-length: 140
+  cyclop:
+    max-complexity: 108
+  funlen:
+    lines: 300
+    statements: 170
+  gocyclo:
+    min-complexity: 90
+  wsl:
+    allow-cuddle-declarations: true
+  nlreturn:
+    block-size: 2
+  gosec:
+    excludes:
+      - G115 # overflow conversation
+      - G306 # expect WriteFile permissions to be 0600 or less (gosec)
