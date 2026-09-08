@@ -41,14 +41,11 @@ linters:
 
   exclusions:
     paths:
-      - ansible
-      - charts
       - deploy
-      - generator
       - docs
       - vendor
       - tools
-      - mocks
+      - proto
   settings:
     depguard:
       rules:
