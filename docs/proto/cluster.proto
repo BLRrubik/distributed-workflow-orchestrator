@@ -1,0 +1,45 @@
+// docs/proto/worker.proto — сгенерированный код -> common/api/protogen
+syntax = "proto3";
+
+package entities;
+
+option go_package = "common/api/protogen";
+
+service ClusterService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportResult(ResultRequest) returns (ResultResponse);
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+  string address = 2;
+  map<string, string> labels = 3;
+  int32 capacity = 4;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string reason = 2; // заполнено, если accepted == false (например, дубликат worker_id)
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  int32 running_tasks = 2;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+}
+
+message ResultRequest {
+  string task_id = 1;
+  int32 exit_code = 2;
+  string stdout = 3;
+  string stderr = 4;
+  string error = 5;
+}
+
+message ResultResponse {
+  bool acknowledged = 1;
+}

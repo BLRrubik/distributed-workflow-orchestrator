@@ -1,0 +1,23 @@
+// docs/proto/worker.proto — сгенерированный код -> common/api/protogen
+syntax = "proto3";
+
+package worker;
+
+option go_package = "common/api/protogen";
+
+// Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
+service WorkerService {
+  rpc Dispatch(DispatchRequest) returns (DispatchResponse);
+}
+
+message DispatchRequest {
+  string task_id = 1;
+  string type = 2;              // "shell" | "http"
+  map<string, string> payload = 3;
+  int64 timeout_seconds = 4;
+}
+
+message DispatchResponse {
+  bool accepted = 1;   // воркер подтвердил приём задачи (Capacity позволяет запустить)
+  string reason = 2;   // заполнено, если accepted == false ("worker busy" и т.п.)
+}
