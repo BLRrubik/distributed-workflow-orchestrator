@@ -28,7 +28,7 @@
 
 | Шаг | Что делать | Ожидаемый результат |
 |---|---|---|
-| 2.1 | Написать `docs/proto/worker.proto` (`WorkerService`: `Register`, `Heartbeat`, `Dispatch`, `ReportResult`) и сгенерировать код в `common/api/workerpb` | `protoc`/`buf generate` проходит без ошибок, пакет импортируется |
+| 2.1 | Написать `docs/proto/worker.proto` (`ClusterService`: `Register`, `Heartbeat`, `ReportResult` — сервер control-plane; `WorkerRPC`: `Dispatch` — сервер воркер) и сгенерировать код в `common/api/workerpb` | `protoc`/`buf generate` проходит без ошибок, пакет импортируется |
 | 2.2 | Поднять `cmd/worker/main.go`: gRPC-сервер, реализующий `Dispatch` заглушкой (просто логирует полученную задачу) | `go run ./cmd/worker` стартует, `grpcurl` до `Dispatch` получает ответ |
 | 2.3 | Реализовать `ShellExecutor` (§6.3) | Юнит-тест: `Execute(ctx, {cmd: "echo hello"})` возвращает `TaskResult{ExitCode: 0, Stdout: "hello\n"}` |
 | 2.4 | Реализовать `Scheduler.Assign` + `SelectWorker` в самом простом виде — единственный захардкоженный воркер | Задача в статусе `READY` подхватывается планировщиком и логируется как назначенная |
