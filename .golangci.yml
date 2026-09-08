@@ -1,0 +1,120 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: vendor
+  tests: true
+
+output:
+  formats:
+    text:
+      path: stdout
+      colors: true
+
+linters:
+  default: all
+  disable:
+    - misspell
+    - tagalign # выравнивание тегов структур
+    - protogetter # 1 issue: использовать getter для proto полей
+    - perfsprint # оптимизация fmt.Sprintf
+    - testpackage # тесты в отдельном _test пакете
+    - tagliatelle # именование тегов JSON (snake_case/camelCase)
+    - nonamedreturns # именованные возвращаемые значения
+    - ireturn # возврат интерфейсов
+    - gochecknoglobals # глобальные переменные
+    - exhaustive # неполные switch
+    - exhaustruct # заполнение всех полей структур
+    - exhaustruct_v5 # заполнение всех полей структур
+    - nestif # вложенные if
+    - godox # TODO/FIXME комментарии
+    - err113 # статические ошибки вместо динамических
+    - mnd # магические числа
+    - prealloc # предварительное выделение slice
+    - errorlint # проверка ошибок
+    - paralleltest # параллельные тесты
+    - containedctx # проверка контекста
+    - goconst # константы
+    - varnamelen # длина имён переменных
+    - noinlineerr # inline обработка ошибок
+    - testifylint # исправления тестов с assert.*
+
+  exclusions:
+    paths:
+      - ansible
+      - charts
+      - deploy
+      - generator
+      - docs
+      - vendor
+      - tools
+      - mocks
+  settings:
+    depguard:
+      rules:
+        main:
+          allow:
+            - $gostd
+            - github.com/
+            - golang.org
+            - google.golang.org
+            - gopkg.in
+            - go.uber.org
+          deny:
+            - pkg: "emperror.dev/errors"
+              desc: should be replaced by "github.com/pkg/errors"
+    revive:
+      rules:
+        - name: unexported-return
+          disabled: true
+    misspell:
+      locale: US
+    lll:
+      line-length: 140
+    cyclop:
+      max-complexity: 108
+    funlen:
+      lines: 300
+      statements: 170
+    gocyclo:
+      min-complexity: 90
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+    nlreturn:
+      block-size: 2
+    gosec:
+      excludes:
+        - G115 # overflow conversation
+        - G306 # expect WriteFile permissions to be 0600 or less (gosec)
+        - G304 # potential file inclusion via variable
+        - G602 # slice index out of range
+    staticcheck: # Go 1.25 upgrade
+      checks:
+        - "all"
+        - "-QF*" # отключаем quickfix предложения
+        - "-ST1020" # comment on exported method should be of the form
+        - "-ST1021" # comment on exported type should be of the form
+        - "-ST1022" # comment on exported const should be of the form
+        - "-ST1000" # at least one file in a package should have a package comment
+    errcheck: # Go 1.25 upgrade
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net/http.Response).Body.Close
+        - (net.Conn).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Unsetenv
+
+formatters:
+  enable:
+    - gci
+  settings:
+    gci:
+      sections:
+        - Standard
+        - Default
+        - Prefix(github.com/blrrubik/distributed-workflow-orchestrator)

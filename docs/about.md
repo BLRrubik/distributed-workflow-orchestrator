@@ -382,7 +382,7 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow)
 
 // OnTaskCompleted вызывается, когда Scheduler получил результат от воркера.
 // Пересчитывает READY-множество для зависимых задач.
-func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID domain.TaskID, result domain.TaskResult) error
+func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID domain.WorkflowID, taskID domain.TaskID, result domain.TaskResult) error
 
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач
 func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []domain.TaskID

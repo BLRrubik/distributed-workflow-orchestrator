@@ -2,11 +2,22 @@ package context
 
 import (
 	"context"
+	"time"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
-type AppContext struct {
+type AppContext interface {
+	Deadline() (deadline time.Time, ok bool)
+	Done() <-chan struct{}
+	Err() error
+	Value(key any) any
+
+	GetContext() context.Context
+	GetLogger() *logger.Logger
+}
+
+type appContext struct {
 	context.Context
 
 	log *logger.Logger
@@ -15,17 +26,17 @@ type AppContext struct {
 func NewAppContext(
 	ctx context.Context,
 	log *logger.Logger,
-) *AppContext {
-	return &AppContext{
+) AppContext {
+	return &appContext{
 		Context: ctx,
 		log:     log,
 	}
 }
 
-func (ctx *AppContext) GetContext() context.Context {
+func (ctx *appContext) GetContext() context.Context {
 	return ctx.Context
 }
 
-func (ctx *AppContext) GetLogger() *logger.Logger {
+func (ctx *appContext) GetLogger() *logger.Logger {
 	return ctx.log
 }
