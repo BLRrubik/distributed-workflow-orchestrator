@@ -50,19 +50,49 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, tas
 		return fmt.Errorf("task not found %s", taskID)
 	}
 
-	task.Status = domain.TaskSucceeded
-	task.Result = &result
+	e.UpdateTaskStatus(ctx, task, domain.TaskDispatched)
+	e.UpdateTaskStatus(ctx, task, domain.TaskRunning)
 
-	ctx.GetLogger().Info("task succeeded", logger.String("task", task.ID))
+	if e.UpdateTaskStatus(ctx, task, domain.TaskSucceeded) {
+		task.SetResult(&result)
+		ctx.GetLogger().Info("task succeeded", logger.String("task", task.ID))
+	}
 
 	e.markReadyTasks(ctx, wf)
+	e.finalizeWorkflowIfDone(ctx, wf)
 
 	return nil
 }
 
+func (e *WorkflowEngine) UpdateTaskStatus(ctx context.AppContext, task *domain.Task, newStatus domain.TaskStatus) bool {
+	// metrics there
+	return task.UpdateStatus(ctx, newStatus)
+}
+
+func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.AppContext, wf *domain.Workflow, newStatus domain.WorkflowStatus) bool {
+	// metrics there
+	if ok := wf.UpdateStatus(ctx, newStatus); ok {
+		ctx.GetLogger().Info(
+			"workflow status changed",
+			logger.String("workflow_id", wf.ID),
+			logger.String("status", newStatus.String()),
+		)
+
+		return true
+	}
+
+	return false
+}
+
 // markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
 func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workflow) {
-	for _, readyTaskID := range e.recomputeReadyTasks(wf) {
+	readyTasks := e.recomputeReadyTasks(wf)
+
+	if len(readyTasks) > 0 && wf.GetStatus() == domain.WorkflowPending {
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowRunning)
+	}
+
+	for _, readyTaskID := range readyTasks {
 		readyTask, ok := wf.Tasks[readyTaskID]
 		if !ok {
 			ctx.GetLogger().Error("task not found by ready task", logger.String("task", readyTaskID))
@@ -70,13 +100,13 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workf
 			continue
 		}
 
-		if readyTask.Status == domain.TaskReady {
+		if readyTask.GetStatus() == domain.TaskReady {
 			continue
 		}
 
-		readyTask.Status = domain.TaskReady
-
-		ctx.GetLogger().Info("task ready", logger.String("task", readyTask.ID))
+		if e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady) {
+			ctx.GetLogger().Info("task ready", logger.String("task", readyTask.ID))
+		}
 	}
 }
 
@@ -93,4 +123,19 @@ func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string {
 	}
 
 	return readyTasks
+}
+
+// finalizeWorkflowIfDone проверяет, завершены ли все задачи графа, и переводит workflow
+// в терминальный статус (SUCCEEDED, если ни одна задача не провалилась, иначе FAILED).
+func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.AppContext, wf *domain.Workflow) {
+	if wf.IsFinished() || !wf.AllTasksFinished() {
+		return
+	}
+
+	target := domain.WorkflowSucceeded
+	if wf.HasFailedTask() {
+		target = domain.WorkflowFailed
+	}
+
+	e.UpdateWorkflowStatus(ctx, wf, target)
 }

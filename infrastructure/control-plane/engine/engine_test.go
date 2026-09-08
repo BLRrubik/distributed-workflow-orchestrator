@@ -17,9 +17,9 @@ func newTestCtx() appctx.AppContext {
 
 func buildTestDeployTasks() []domain.Task {
 	return []domain.Task{
-		{ID: "build", Name: "build", Status: domain.TaskPending, DependsOn: []string{}},
-		{ID: "test", Name: "test", Status: domain.TaskPending, DependsOn: []string{"build"}},
-		{ID: "deploy", Name: "deploy", Status: domain.TaskPending, DependsOn: []string{"test"}},
+		{ID: "build", Name: "build", DependsOn: []string{}},
+		{ID: "test", Name: "test", DependsOn: []string{"build"}},
+		{ID: "deploy", Name: "deploy", DependsOn: []string{"test"}},
 	}
 }
 
@@ -34,9 +34,9 @@ func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, wf.ID, id)
 
-	assert.Equal(t, domain.TaskReady, wf.Tasks["build"].Status)
-	assert.Equal(t, domain.TaskPending, wf.Tasks["test"].Status)
-	assert.Equal(t, domain.TaskPending, wf.Tasks["deploy"].Status)
+	assert.Equal(t, domain.TaskReady, wf.Tasks["build"].GetStatus())
+	assert.Equal(t, domain.TaskPending, wf.Tasks["test"].GetStatus())
+	assert.Equal(t, domain.TaskPending, wf.Tasks["deploy"].GetStatus())
 }
 
 func TestOnTaskCompleted_PropagatesReadyToDependents(t *testing.T) {
@@ -52,20 +52,53 @@ func TestOnTaskCompleted_PropagatesReadyToDependents(t *testing.T) {
 	err = e.OnTaskCompleted(ctx, wf.ID, "build", domain.TaskResult{ExitCode: 0})
 	assert.NoError(t, err)
 
-	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["build"].Status)
-	assert.Equal(t, domain.TaskReady, wf.Tasks["test"].Status)
-	assert.Equal(t, domain.TaskPending, wf.Tasks["deploy"].Status)
+	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["build"].GetStatus())
+	assert.Equal(t, domain.TaskReady, wf.Tasks["test"].GetStatus())
+	assert.Equal(t, domain.TaskPending, wf.Tasks["deploy"].GetStatus())
 
 	err = e.OnTaskCompleted(ctx, wf.ID, "test", domain.TaskResult{ExitCode: 0})
 	assert.NoError(t, err)
 
-	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["test"].Status)
-	assert.Equal(t, domain.TaskReady, wf.Tasks["deploy"].Status)
+	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["test"].GetStatus())
+	assert.Equal(t, domain.TaskReady, wf.Tasks["deploy"].GetStatus())
 
 	err = e.OnTaskCompleted(ctx, wf.ID, "deploy", domain.TaskResult{ExitCode: 0})
 	assert.NoError(t, err)
 
-	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["deploy"].Status)
+	assert.Equal(t, domain.TaskSucceeded, wf.Tasks["deploy"].GetStatus())
+}
+
+func TestSubmitWorkflow_MarksWorkflowRunning(t *testing.T) {
+	e := NewWorkflowEngine()
+	ctx := newTestCtx()
+
+	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
+	assert.NoError(t, err)
+	assert.Equal(t, domain.WorkflowPending, wf.GetStatus())
+
+	_, err = e.SubmitWorkflow(ctx, wf)
+	assert.NoError(t, err)
+	assert.Equal(t, domain.WorkflowRunning, wf.GetStatus())
+}
+
+func TestOnTaskCompleted_FinalizesWorkflowAsSucceeded(t *testing.T) {
+	e := NewWorkflowEngine()
+	ctx := newTestCtx()
+
+	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
+	assert.NoError(t, err)
+
+	_, err = e.SubmitWorkflow(ctx, wf)
+	assert.NoError(t, err)
+
+	for _, taskID := range []string{"build", "test"} {
+		assert.NoError(t, e.OnTaskCompleted(ctx, wf.ID, taskID, domain.TaskResult{ExitCode: 0}))
+		assert.Equal(t, domain.WorkflowRunning, wf.GetStatus(), "workflow must stay RUNNING while tasks remain")
+	}
+
+	assert.NoError(t, e.OnTaskCompleted(ctx, wf.ID, "deploy", domain.TaskResult{ExitCode: 0}))
+	assert.Equal(t, domain.WorkflowSucceeded, wf.GetStatus())
+	assert.True(t, wf.IsFinished())
 }
 
 func TestOnTaskCompleted_WorkflowNotFound(t *testing.T) {

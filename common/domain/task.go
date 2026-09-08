@@ -1,43 +1,11 @@
 package domain
 
-import "time"
+import (
+	"time"
 
-// TaskStatus — конечный автомат состояния задачи.
-type TaskStatus string
-
-const (
-	TaskPending    TaskStatus = "PENDING"    // создана, ждёт, пока разрешатся зависимости
-	TaskReady      TaskStatus = "READY"      // зависимости выполнены, ждёт свободного воркера
-	TaskDispatched TaskStatus = "DISPATCHED" // отправлена воркеру, ждём подтверждения
-	TaskRunning    TaskStatus = "RUNNING"    // воркер подтвердил запуск
-	TaskSucceeded  TaskStatus = "SUCCEEDED"
-	TaskFailed     TaskStatus = "FAILED"
-	TaskRetrying   TaskStatus = "RETRYING"
-	TaskCancelled  TaskStatus = "CANCELLED"
+	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
-
-func (s TaskStatus) String() string {
-	switch s {
-	case TaskPending:
-		return "PENDING"
-	case TaskReady:
-		return "READY"
-	case TaskDispatched:
-		return "DISPATCHED"
-	case TaskRunning:
-		return "RUNNING"
-	case TaskSucceeded:
-		return "SUCCEEDED"
-	case TaskFailed:
-		return "FAILED"
-	case TaskRetrying:
-		return "RETRYING"
-	case TaskCancelled:
-		return "CANCELLED"
-	default:
-		return "UNKNOWN"
-	}
-}
 
 // Task — узел графа выполнения (DAG node).
 type Task struct {
@@ -49,16 +17,16 @@ type Task struct {
 	MaxRetries   int
 	RetryBackoff time.Duration
 	Timeout      time.Duration
-	Status       TaskStatus
+	status       TaskStatus
 	AssignedTo   string
 	Attempt      int
-	Result       *TaskResult
+	result       *TaskResult
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
 func (t *Task) IsFinished() bool {
-	return t.Status == TaskSucceeded || t.Status == TaskFailed || t.Status == TaskCancelled
+	return t.status == TaskSucceeded || t.status == TaskFailed || t.status == TaskCancelled
 }
 
 func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
@@ -74,6 +42,40 @@ func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 	}
 
 	return true
+}
+
+func (t *Task) UpdateStatus(ctx appcontext.AppContext, status TaskStatus) bool {
+	if err := t.status.CanTransitTo(status); err != nil {
+		ctx.GetLogger().Error(
+			"update status failed",
+			logger.String("task_id", t.ID),
+			logger.String("from", string(t.status)),
+			logger.String("to", string(status)),
+			logger.Error(err),
+		)
+
+		return false
+	}
+
+	t.status = status
+
+	return true
+}
+
+func (t *Task) GetStatus() TaskStatus {
+	return t.status
+}
+
+func (t *Task) GetResult() (TaskResult, bool) {
+	if t.result == nil {
+		return TaskResult{}, false
+	}
+
+	return *t.result, true
+}
+
+func (t *Task) SetResult(result *TaskResult) {
+	t.result = result
 }
 
 // TaskSpec — абстракция типа задачи.

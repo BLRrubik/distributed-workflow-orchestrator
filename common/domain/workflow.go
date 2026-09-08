@@ -5,35 +5,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
-
-// WorkflowStatus — состояние графа целиком.
-type WorkflowStatus string
-
-const (
-	WorkflowPending   WorkflowStatus = "PENDING"
-	WorkflowRunning   WorkflowStatus = "RUNNING"
-	WorkflowSucceeded WorkflowStatus = "SUCCEEDED"
-	WorkflowFailed    WorkflowStatus = "FAILED"
-	WorkflowCancelled WorkflowStatus = "CANCELLED"
-)
-
-func (s WorkflowStatus) String() string {
-	switch s {
-	case WorkflowPending:
-		return "PENDING"
-	case WorkflowRunning:
-		return "RUNNING"
-	case WorkflowSucceeded:
-		return "SUCCEEDED"
-	case WorkflowFailed:
-		return "FAILED"
-	case WorkflowCancelled:
-		return "CANCELLED"
-	default:
-		return "UNKNOWN"
-	}
-}
 
 // Workflow — DAG задач.
 type Workflow struct {
@@ -41,7 +16,7 @@ type Workflow struct {
 	TenantID  string
 	Name      string
 	Tasks     map[string]*Task
-	Status    WorkflowStatus
+	status    WorkflowStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -73,10 +48,59 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		TenantID:  tenantID,
 		Name:      name,
 		Tasks:     tasksMap,
-		Status:    WorkflowPending,
+		status:    WorkflowPending,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}, nil
+}
+
+func (w *Workflow) GetStatus() WorkflowStatus {
+	return w.status
+}
+
+func (w *Workflow) UpdateStatus(ctx appcontext.AppContext, status WorkflowStatus) bool {
+	if err := w.status.CanTransitTo(status); err != nil {
+		ctx.GetLogger().Error(
+			"update workflow status failed",
+			logger.String("workflow_id", w.ID),
+			logger.String("from", w.status.String()),
+			logger.String("to", status.String()),
+			logger.Error(err),
+		)
+
+		return false
+	}
+
+	w.status = status
+
+	return true
+}
+
+// IsFinished — завершён ли workflow целиком (терминальный статус).
+func (w *Workflow) IsFinished() bool {
+	return w.status == WorkflowSucceeded || w.status == WorkflowFailed || w.status == WorkflowCancelled
+}
+
+// AllTasksFinished — завершены ли все задачи графа (успешно/с ошибкой/отменены).
+func (w *Workflow) AllTasksFinished() bool {
+	for _, task := range w.Tasks {
+		if !task.IsFinished() {
+			return false
+		}
+	}
+
+	return true
+}
+
+// HasFailedTask — есть ли в графе задача, завершившаяся неуспешно.
+func (w *Workflow) HasFailedTask() bool {
+	for _, task := range w.Tasks {
+		if status := task.GetStatus(); status == TaskFailed || status == TaskCancelled {
+			return true
+		}
+	}
+
+	return false
 }
 
 func validateDependencies(tasks map[string]*Task) error {

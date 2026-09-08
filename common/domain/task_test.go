@@ -1,6 +1,18 @@
 package domain
 
-import "testing"
+import (
+	stdcontext "context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+)
+
+func newTestCtx() appcontext.AppContext {
+	return appcontext.NewAppContext(stdcontext.Background(), logger.New(logger.ERROR, true))
+}
 
 func TestTaskStatus_String(t *testing.T) {
 	tests := []struct {
@@ -16,7 +28,7 @@ func TestTaskStatus_String(t *testing.T) {
 		{name: "FAILED", t: TaskFailed, want: "FAILED"},
 		{name: "RETRYING", t: TaskRetrying, want: "RETRYING"},
 		{name: "CANCELLED", t: TaskCancelled, want: "CANCELLED"},
-		{name: "UNKNOWN", t: "unknown", want: "UNKNOWN"},
+		{name: "UNKNOWN", t: TaskStatus(99), want: "UNKNOWN"},
 	}
 
 	for _, tt := range tests {
@@ -26,4 +38,33 @@ func TestTaskStatus_String(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTask_UpdateStatus(t *testing.T) {
+	ctx := newTestCtx()
+
+	task := &Task{ID: "task1", Name: "task1"}
+	assert.Equal(t, TaskPending, task.GetStatus())
+
+	assert.True(t, task.UpdateStatus(ctx, TaskReady))
+	assert.Equal(t, TaskReady, task.GetStatus())
+
+	assert.False(t, task.UpdateStatus(ctx, TaskSucceeded))
+	assert.Equal(t, TaskReady, task.GetStatus(), "status must not change on rejected transition")
+
+	assert.False(t, task.UpdateStatus(ctx, TaskReady))
+	assert.Equal(t, TaskReady, task.GetStatus(), "transition to same status must be rejected")
+}
+
+func TestTask_GetSetResult(t *testing.T) {
+	task := &Task{ID: "task1", Name: "task1"}
+
+	_, ok := task.GetResult()
+	assert.False(t, ok)
+
+	task.SetResult(&TaskResult{ExitCode: 0, Stdout: "hello"})
+
+	result, ok := task.GetResult()
+	assert.True(t, ok)
+	assert.Equal(t, "hello", result.Stdout)
 }

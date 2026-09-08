@@ -15,9 +15,9 @@ func main() {
 	ctx := appctx.NewAppContext(context.Background(), log)
 
 	tasks := []domain.Task{
-		{ID: "build", Name: "build", Status: domain.TaskPending, DependsOn: []string{}},
-		{ID: "test", Name: "test", Status: domain.TaskPending, DependsOn: []string{"build"}},
-		{ID: "deploy", Name: "deploy", Status: domain.TaskPending, DependsOn: []string{"test"}},
+		{ID: "build", Name: "build", DependsOn: []string{}},
+		{ID: "test", Name: "test", DependsOn: []string{"build"}},
+		{ID: "deploy", Name: "deploy", DependsOn: []string{"test"}},
 	}
 
 	wf, err := domain.NewWorkflow("admin", "example-workflow", tasks)
