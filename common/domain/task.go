@@ -2,9 +2,6 @@ package domain
 
 import (
 	"time"
-
-	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
 // Task — узел графа выполнения (DAG node).
@@ -44,22 +41,14 @@ func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 	return true
 }
 
-func (t *Task) UpdateStatus(ctx appcontext.AppContext, status TaskStatus) bool {
+func (t *Task) UpdateStatus(status TaskStatus) error {
 	if err := t.status.CanTransitTo(status); err != nil {
-		ctx.GetLogger().Error(
-			"update status failed",
-			logger.String("task_id", t.ID),
-			logger.String("from", string(t.status)),
-			logger.String("to", string(status)),
-			logger.Error(err),
-		)
-
-		return false
+		return err
 	}
 
 	t.status = status
 
-	return true
+	return nil
 }
 
 func (t *Task) GetStatus() TaskStatus {

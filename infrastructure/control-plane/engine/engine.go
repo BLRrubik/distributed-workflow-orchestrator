@@ -1,32 +1,34 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/context"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
 type WorkflowEngine struct {
 	workflows map[string]*domain.Workflow
+	log       *logger.Logger
 
 	mu sync.RWMutex
 }
 
-func NewWorkflowEngine() *WorkflowEngine {
+func NewWorkflowEngine(log *logger.Logger) *WorkflowEngine {
 	return &WorkflowEngine{
 		workflows: make(map[string]*domain.Workflow),
+		log:       log,
 	}
 }
 
 // SubmitWorkflow вызывается из API. Валидирует DAG и сохраняет workflow.
-func (e *WorkflowEngine) SubmitWorkflow(ctx context.AppContext, wf *domain.Workflow) (string, error) {
+func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf *domain.Workflow) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	ctx.GetLogger().Info("submitting workflow", logger.String("workflow_id", wf.ID))
+	e.log.Info("submitting workflow", logger.String("workflow_id", wf.ID))
 	e.workflows[wf.ID] = wf
 
 	e.markReadyTasks(ctx, wf)
@@ -36,7 +38,7 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.AppContext, wf *domain.Workf
 
 // OnTaskCompleted вызывается, когда Scheduler получил результат от воркера.
 // Пересчитывает READY-множество для зависимых задач.
-func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, taskID string, result domain.TaskResult) error {
+func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID, taskID string, result domain.TaskResult) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -55,7 +57,7 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, tas
 
 	if e.UpdateTaskStatus(ctx, task, domain.TaskSucceeded) {
 		task.SetResult(&result)
-		ctx.GetLogger().Info("task succeeded", logger.String("task", task.ID))
+		e.log.Info("task succeeded", logger.String("task", task.ID))
 	}
 
 	e.markReadyTasks(ctx, wf)
@@ -64,18 +66,31 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.AppContext, workflowID, tas
 	return nil
 }
 
-func (e *WorkflowEngine) UpdateTaskStatus(ctx context.AppContext, task *domain.Task, newStatus domain.TaskStatus) bool {
+func (e *WorkflowEngine) UpdateTaskStatus(ctx context.Context, task *domain.Task, newStatus domain.TaskStatus) bool {
 	// metrics there
-	return task.UpdateStatus(ctx, newStatus)
+
+	if err := task.UpdateStatus(newStatus); err != nil {
+		e.log.Info(
+			"workflow status was not changed",
+			logger.String("task_id", task.ID),
+			logger.String("status", newStatus.String()),
+			logger.Error(err),
+		)
+
+		return true
+	}
+
+	return false
 }
 
-func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.AppContext, wf *domain.Workflow, newStatus domain.WorkflowStatus) bool {
+func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.Context, wf *domain.Workflow, newStatus domain.WorkflowStatus) bool {
 	// metrics there
-	if ok := wf.UpdateStatus(ctx, newStatus); ok {
-		ctx.GetLogger().Info(
-			"workflow status changed",
+	if err := wf.UpdateStatus(newStatus); err != nil {
+		e.log.Info(
+			"workflow was not changed",
 			logger.String("workflow_id", wf.ID),
 			logger.String("status", newStatus.String()),
+			logger.Error(err),
 		)
 
 		return true
@@ -85,7 +100,7 @@ func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.AppContext, wf *domain
 }
 
 // markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
-func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workflow) {
+func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow) {
 	readyTasks := e.recomputeReadyTasks(wf)
 
 	if len(readyTasks) > 0 && wf.GetStatus() == domain.WorkflowPending {
@@ -95,7 +110,7 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workf
 	for _, readyTaskID := range readyTasks {
 		readyTask, ok := wf.Tasks[readyTaskID]
 		if !ok {
-			ctx.GetLogger().Error("task not found by ready task", logger.String("task", readyTaskID))
+			e.log.Error("task not found by ready task", logger.String("task", readyTaskID))
 
 			continue
 		}
@@ -105,7 +120,7 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.AppContext, wf *domain.Workf
 		}
 
 		if e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady) {
-			ctx.GetLogger().Info("task ready", logger.String("task", readyTask.ID))
+			e.log.Info("task ready", logger.String("task", readyTask.ID))
 		}
 	}
 }
@@ -127,7 +142,7 @@ func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string {
 
 // finalizeWorkflowIfDone проверяет, завершены ли все задачи графа, и переводит workflow
 // в терминальный статус (SUCCEEDED, если ни одна задача не провалилась, иначе FAILED).
-func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.AppContext, wf *domain.Workflow) {
+func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.Context, wf *domain.Workflow) {
 	if wf.IsFinished() || !wf.AllTasksFinished() {
 		return
 	}

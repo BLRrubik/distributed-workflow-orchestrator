@@ -137,45 +137,39 @@ func TestNewWorkflow(t *testing.T) {
 }
 
 func TestWorkflow_UpdateStatus(t *testing.T) {
-	ctx := newTestCtx()
-
 	wf, err := NewWorkflow("tenant1", "wf1", []Task{
 		{ID: "task1", Name: "task1", DependsOn: []string{}},
 	})
 	assert.NoError(t, err)
 	assert.Equal(t, WorkflowPending, wf.GetStatus())
 
-	assert.True(t, wf.UpdateStatus(ctx, WorkflowRunning))
+	assert.NoError(t, wf.UpdateStatus(WorkflowRunning))
 	assert.Equal(t, WorkflowRunning, wf.GetStatus())
 
-	assert.False(t, wf.UpdateStatus(ctx, WorkflowPending), "backwards transition must be rejected")
+	assert.Error(t, wf.UpdateStatus(WorkflowPending), "backwards transition must be rejected")
 	assert.Equal(t, WorkflowRunning, wf.GetStatus())
 
-	assert.True(t, wf.UpdateStatus(ctx, WorkflowSucceeded))
+	assert.NoError(t, wf.UpdateStatus(WorkflowSucceeded))
 	assert.Equal(t, WorkflowSucceeded, wf.GetStatus())
 
-	assert.False(t, wf.UpdateStatus(ctx, WorkflowFailed), "terminal status must be rejected")
+	assert.Error(t, wf.UpdateStatus(WorkflowFailed), "terminal status must be rejected")
 }
 
 func TestWorkflow_IsFinished(t *testing.T) {
-	ctx := newTestCtx()
-
 	wf, err := NewWorkflow("tenant1", "wf1", []Task{
 		{ID: "task1", Name: "task1", DependsOn: []string{}},
 	})
 	assert.NoError(t, err)
 	assert.False(t, wf.IsFinished())
 
-	assert.True(t, wf.UpdateStatus(ctx, WorkflowRunning))
+	assert.NoError(t, wf.UpdateStatus(WorkflowRunning))
 	assert.False(t, wf.IsFinished())
 
-	assert.True(t, wf.UpdateStatus(ctx, WorkflowSucceeded))
+	assert.NoError(t, wf.UpdateStatus(WorkflowSucceeded))
 	assert.True(t, wf.IsFinished())
 }
 
 func TestWorkflow_AllTasksFinished(t *testing.T) {
-	ctx := newTestCtx()
-
 	wf, err := NewWorkflow("tenant1", "wf1", []Task{
 		{ID: "task1", Name: "task1", DependsOn: []string{}},
 		{ID: "task2", Name: "task2", DependsOn: []string{}},
@@ -183,19 +177,17 @@ func TestWorkflow_AllTasksFinished(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, wf.AllTasksFinished())
 
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskReady))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskDispatched))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskRunning))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskSucceeded))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskReady))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskDispatched))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskRunning))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskSucceeded))
 	assert.False(t, wf.AllTasksFinished(), "task2 still pending")
 
-	assert.True(t, wf.Tasks["task2"].UpdateStatus(ctx, TaskCancelled))
+	assert.NoError(t, wf.Tasks["task2"].UpdateStatus(TaskCancelled))
 	assert.True(t, wf.AllTasksFinished())
 }
 
 func TestWorkflow_HasFailedTask(t *testing.T) {
-	ctx := newTestCtx()
-
 	wf, err := NewWorkflow("tenant1", "wf1", []Task{
 		{ID: "task1", Name: "task1", DependsOn: []string{}},
 		{ID: "task2", Name: "task2", DependsOn: []string{}},
@@ -203,10 +195,10 @@ func TestWorkflow_HasFailedTask(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, wf.HasFailedTask())
 
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskReady))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskDispatched))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskRunning))
-	assert.True(t, wf.Tasks["task1"].UpdateStatus(ctx, TaskFailed))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskReady))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskDispatched))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskRunning))
+	assert.NoError(t, wf.Tasks["task1"].UpdateStatus(TaskFailed))
 	assert.True(t, wf.HasFailedTask())
 }
 

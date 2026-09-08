@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 
-	appctx "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/engine"
@@ -12,7 +11,7 @@ import (
 func main() {
 	log := logger.New(logger.INFO, true)
 
-	ctx := appctx.NewAppContext(context.Background(), log)
+	ctx := context.Background()
 
 	tasks := []domain.Task{
 		{ID: "build", Name: "build", DependsOn: []string{}},
@@ -25,7 +24,7 @@ func main() {
 		panic(err)
 	}
 
-	eng := engine.NewWorkflowEngine()
+	eng := engine.NewWorkflowEngine(log)
 
 	workflowID, err := eng.SubmitWorkflow(ctx, wf)
 	if err != nil {
