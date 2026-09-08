@@ -3,15 +3,23 @@ package main
 import (
 	"net"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/config"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/server"
 	"google.golang.org/grpc"
 )
 
 func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		panic(err)
+	}
+
+	config.Print(cfg)
+
 	grpcServer := grpc.NewServer()
 	server.RegisterGRPCServer(grpcServer)
 
-	grpcListener, err := net.Listen("tcp", ":8081")
+	grpcListener, err := net.Listen("tcp", cfg.GRPC.Port)
 	if err != nil {
 		panic(err)
 	}

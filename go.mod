@@ -12,6 +12,7 @@ require (
 )
 
 require (
+	github.com/goccy/go-yaml v1.19.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
