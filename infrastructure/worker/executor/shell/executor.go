@@ -48,6 +48,7 @@ func (e *Executor) Execute(ctx context.Context, spec domain.TaskSpec, timeout ti
 		// таймаут: процесс убит через ctx, exec.CommandContext сам шлёт kill
 		result.ExitCode = -1
 		result.Error = "task timed out"
+
 		return result, nil // это НЕ ошибка исполнителя — это нормальный результат "не успел"
 	case err != nil:
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {

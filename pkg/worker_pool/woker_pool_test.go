@@ -10,32 +10,52 @@ import (
 	"time"
 )
 
-func TestWorkerPool_ExecutesJobs(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+// funcTask — Task на замыкании, для тестов. GetWaitDuration маленький по
+// умолчанию, чтобы ретраи в тестах не тормозили.
+type funcTask struct {
+	do   func(context.Context) error
+	wait time.Duration
+}
 
-	wp := NewWorkerPool[int]()
-	wp.Start(ctx)
+func (f *funcTask) Do(ctx context.Context) error {
+	return f.do(ctx)
+}
+
+func (f *funcTask) GetWaitDuration() time.Duration {
+	if f.wait == 0 {
+		return 5 * time.Millisecond
+	}
+
+	return f.wait
+}
+
+func TestWorkerPool_ExecutesJobs(t *testing.T) {
+	wp := NewWorkerPool()
+
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	var mu sync.Mutex
+
 	results := make([]int, 0)
 
 	var wg sync.WaitGroup
+
 	wg.Add(5)
 
 	for i := range 5 {
 		v := i
 
-		wp.Submit(v, func(n int) error {
+		wp.Submit(&funcTask{do: func(context.Context) error {
 			defer wg.Done()
 
 			mu.Lock()
-			results = append(results, n)
+
+			results = append(results, v)
 			mu.Unlock()
 
 			return nil
-		})
+		}})
 	}
 
 	waitOrFail(t, &wg)
@@ -46,25 +66,25 @@ func TestWorkerPool_ExecutesJobs(t *testing.T) {
 }
 
 func TestWorkerPool_ParallelExecution(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wp := NewWorkerPool(WithWorkerCount(4), WithCapacity(10))
 
-	wp := NewWorkerPool[int](WithWorkerCount[int](4), WithCapacity[int](10))
-	wp.Start(ctx)
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	start := time.Now()
 
 	var wg sync.WaitGroup
+
 	wg.Add(4)
 
-	for i := range 4 {
-		wp.Submit(i, func(n int) error {
+	for range 4 {
+		wp.Submit(&funcTask{do: func(context.Context) error {
 			defer wg.Done()
+
 			time.Sleep(100 * time.Millisecond)
 
 			return nil
-		})
+		}})
 	}
 
 	waitOrFail(t, &wg)
@@ -77,21 +97,20 @@ func TestWorkerPool_ParallelExecution(t *testing.T) {
 }
 
 func TestWorkerPool_StopWaitsForJobs(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	wp := NewWorkerPool[int]()
-	wp.Start(ctx)
+	wp := NewWorkerPool()
+	wp.Start(t.Context())
 
 	var wg sync.WaitGroup
+
 	wg.Add(1)
 
-	wp.Submit(1, func(n int) error {
+	wp.Submit(&funcTask{do: func(context.Context) error {
 		defer wg.Done()
+
 		time.Sleep(50 * time.Millisecond)
 
 		return nil
-	})
+	}})
 
 	wp.Stop()
 
@@ -106,31 +125,45 @@ func TestWorkerPool_StopWaitsForJobs(t *testing.T) {
 }
 
 func TestWorkerPool_TrySubmit(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	wp := NewWorkerPool[int](WithWorkerCount[int](1), WithCapacity[int](1))
-	wp.Start(ctx)
-	defer wp.Stop()
+	wp := NewWorkerPool(WithWorkerCount(1), WithCapacity(1))
+	wp.Start(t.Context())
 
 	blocker := make(chan struct{})
+	started := make(chan struct{})
 
-	// заполняем очередь
-	ok := wp.TrySubmit(1, func(n int) error {
+	// занимает единственного воркера — дожидаемся, чтобы буфер гарантированно опустел
+	ok := wp.TrySubmit(&funcTask{do: func(context.Context) error {
+		close(started)
 		<-blocker
+
 		return nil
-	})
+	}})
 	if !ok {
 		t.Fatal("expected first TrySubmit to succeed")
 	}
 
-	// очередь full
-	ok = wp.TrySubmit(2, func(n int) error { return nil })
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker never picked up the first job")
+	}
+
+	noop := &funcTask{do: func(context.Context) error { return nil }}
+
+	// заполняет единственное свободное место в буфере
+	ok = wp.TrySubmit(noop)
+	if !ok {
+		t.Fatal("expected second TrySubmit to fill the buffer")
+	}
+
+	// и воркер занят, и буфер полон — третьей уже некуда деться
+	ok = wp.TrySubmit(noop)
 	if ok {
 		t.Fatal("expected TrySubmit to fail when queue full")
 	}
 
 	close(blocker)
+	wp.Stop()
 }
 
 func TestWorkerPool_Stress10kJobs(t *testing.T) {
@@ -139,28 +172,26 @@ func TestWorkerPool_Stress10kJobs(t *testing.T) {
 		jobs    = 10_000
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wp := NewWorkerPool(WithWorkerCount(workers), WithCapacity(jobs))
 
-	wp := NewWorkerPool[int](WithWorkerCount[int](workers), WithCapacity[int](jobs))
-	wp.Start(ctx)
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	var counter atomic.Int64
+
 	var wg sync.WaitGroup
+
 	wg.Add(jobs)
 
 	start := time.Now()
 
-	for i := range jobs {
-		v := i
-
-		wp.Submit(v, func(n int) error {
+	for range jobs {
+		wp.Submit(&funcTask{do: func(context.Context) error {
 			counter.Add(1)
 			wg.Done()
 
 			return nil
-		})
+		}})
 	}
 
 	waitOrFail(t, &wg)
@@ -186,28 +217,26 @@ func TestWorkerPool_Stress10kJobs_SmallQueue(t *testing.T) {
 		queue   = 64
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wp := NewWorkerPool(WithWorkerCount(workers), WithCapacity(queue))
 
-	wp := NewWorkerPool[int](WithWorkerCount[int](workers), WithCapacity[int](queue))
-	wp.Start(ctx)
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	var counter atomic.Int64
+
 	var wg sync.WaitGroup
+
 	wg.Add(jobs)
 
 	start := time.Now()
 
-	for i := range jobs {
-		v := i
-
-		wp.Submit(v, func(n int) error {
+	for range jobs {
+		wp.Submit(&funcTask{do: func(context.Context) error {
 			counter.Add(1)
 			wg.Done()
 
 			return nil
-		})
+		}})
 	}
 
 	waitOrFail(t, &wg)
@@ -229,25 +258,25 @@ func TestWorkerPool_Stress10kJobs_SmallQueue(t *testing.T) {
 func TestWorkerPool_Stress10kJobs_RandomLatency(t *testing.T) {
 	const jobs = 10_000
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wp := NewWorkerPool(WithWorkerCount(8), WithCapacity(128))
 
-	wp := NewWorkerPool[int](WithWorkerCount[int](8), WithCapacity[int](128))
-	wp.Start(ctx)
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	var counter atomic.Int64
+
 	var wg sync.WaitGroup
+
 	wg.Add(jobs)
 
-	for i := range jobs {
-		wp.Submit(i, func(n int) error {
+	for range jobs {
+		wp.Submit(&funcTask{do: func(context.Context) error {
 			time.Sleep(time.Duration(rand.Intn(3)) * time.Millisecond) //nolint:gosec
 			counter.Add(1)
 			wg.Done()
 
 			return nil
-		})
+		}})
 	}
 
 	waitOrFail(t, &wg)
@@ -260,17 +289,16 @@ func TestWorkerPool_Stress10kJobs_RandomLatency(t *testing.T) {
 }
 
 func TestWorkerPool_RetriesFailedJob(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	wp := NewWorkerPool(WithWorkerCount(1), WithCapacity(4))
 
-	wp := NewWorkerPool[int](WithWorkerCount[int](1), WithCapacity[int](4))
-	wp.Start(ctx)
+	wp.Start(t.Context())
 	defer wp.Stop()
 
 	var attempts atomic.Int32
+
 	done := make(chan struct{})
 
-	wp.Submit(1, func(n int) error {
+	wp.Submit(&funcTask{do: func(context.Context) error {
 		if attempts.Add(1) == 1 {
 			return errors.New("fail once")
 		}
@@ -278,7 +306,7 @@ func TestWorkerPool_RetriesFailedJob(t *testing.T) {
 		close(done)
 
 		return nil
-	})
+	}})
 
 	select {
 	case <-done:
@@ -288,6 +316,68 @@ func TestWorkerPool_RetriesFailedJob(t *testing.T) {
 
 	if attempts.Load() != 2 {
 		t.Fatalf("expected exactly 2 attempts, got %d", attempts.Load())
+	}
+}
+
+func TestWorkerPool_Stop_WaitsForRetryQueueToDrain(t *testing.T) {
+	pool := NewWorkerPool(WithWorkerCount(1), WithCapacity(4))
+	pool.Start(t.Context())
+
+	var attempts atomic.Int32
+
+	proceed := make(chan struct{}) // держит попытки под полным контролем теста
+
+	pool.Submit(&funcTask{do: func(context.Context) error {
+		<-proceed
+
+		if attempts.Add(1) < 3 {
+			return errors.New("fail")
+		}
+
+		return nil
+	}})
+
+	stopped := make(chan struct{})
+
+	go func() {
+		pool.Stop()
+		close(stopped)
+	}()
+
+	// пока ни одной попытки не разрешено — Stop не может завершиться
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before any attempt ran")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release := func() {
+		select {
+		case proceed <- struct{}{}:
+		case <-time.After(10 * time.Second):
+			t.Fatal("worker never picked up the retried job")
+		}
+	}
+
+	release() // попытка 1: fail
+	release() // попытка 2: fail
+
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before job finished retrying")
+	default:
+	}
+
+	release() // попытка 3: success
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop never returned")
+	}
+
+	if attempts.Load() != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts.Load())
 	}
 }
 

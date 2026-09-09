@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
 func buildTestDeployTasks() []domain.Task {

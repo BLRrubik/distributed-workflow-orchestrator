@@ -2,43 +2,37 @@ package server
 
 import (
 	"context"
-	"time"
+
+	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor/shell"
-	"google.golang.org/grpc"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/service"
 )
 
 type GRPCServer struct {
 	protogen.UnsafeWorkerServiceServer
-	shellExecutor *shell.Executor
+
+	service *service.WorkerService
 
 	log *logger.Logger
 }
 
-func RegisterGRPCServer(s *grpc.Server, log *logger.Logger) {
+func RegisterGRPCServer(s *grpc.Server, log *logger.Logger, service *service.WorkerService) {
 	protogen.RegisterWorkerServiceServer(s, &GRPCServer{
-		shellExecutor: &shell.Executor{},
-		log:           log,
+		service: service,
+		log:     log,
 	})
 }
 
 func (g *GRPCServer) Dispatch(ctx context.Context, request *protogen.DispatchRequest) (*protogen.DispatchResponse, error) {
-	taskSpec := domain.TaskSpec{
-		Type:    request.GetType(),
-		Payload: request.GetPayload(),
-	}
-
-	_, err := g.shellExecutor.Execute(ctx, taskSpec, time.Duration(request.TimeoutSeconds)*time.Second)
-	if err != nil {
-		g.log.Error("error due to executing task",
+	if err := g.service.DispatchTask(ctx, request); err != nil {
+		g.log.Error("dispatch rejected",
 			logger.String("task_id", request.GetTaskId()),
-			logger.Any("task", taskSpec),
 			logger.Error(err),
 		)
 
+		// ошибка диспатча — не ошибка RPC, а бизнес-ответ "не принято"
 		return &protogen.DispatchResponse{
 			Accepted: false,
 		}, nil

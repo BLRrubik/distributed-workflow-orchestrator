@@ -53,6 +53,7 @@ func (q *LinkedQueue[T]) Dequeue() (T, bool) {
 
 	head := q.head
 	q.head = q.head.next
+
 	if q.head == nil {
 		q.tail = nil
 	}

@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// WorkerNode — регистрация воркера в кластере
+// WorkerNode — регистрация воркера в кластере.
 type WorkerNode struct {
 	ID            string
 	Address       string            // host:port для gRPC

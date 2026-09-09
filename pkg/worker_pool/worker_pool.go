@@ -3,40 +3,48 @@ package wp
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type Job[T any] struct {
-	event      T
-	handler    func(T) error
+// Task — единица работы, которую исполняет пул.
+type Task interface {
+	Do(ctx context.Context) error
+	GetWaitDuration() time.Duration
+}
+
+type Job struct {
+	task       Task
 	waitToTime int64
 }
 
-type WorkerPoolOpt[T any] func(*WorkerPool[T])
+type WorkerPoolOpt func(*WorkerPool)
 
-func WithWorkerCount[T any](count int) WorkerPoolOpt[T] {
-	return func(wp *WorkerPool[T]) {
+func WithWorkerCount(count int) WorkerPoolOpt {
+	return func(wp *WorkerPool) {
 		wp.workerCount = count
 	}
 }
 
-func WithCapacity[T any](capacity int) WorkerPoolOpt[T] {
-	return func(wp *WorkerPool[T]) {
+func WithCapacity(capacity int) WorkerPoolOpt {
+	return func(wp *WorkerPool) {
 		wp.capacity = capacity
 	}
 }
 
-type WorkerPool[T any] struct {
+type WorkerPool struct {
 	workerCount int
 	capacity    int
-	jobsQ       LinkedQueue[Job[T]]
-	retryQ      PriorityQueue[Job[T]]
-	jobChan     chan Job[T]
+	jobsQ       LinkedQueue[Job]
+	retryQ      PriorityQueue[Job]
+	jobChan     chan Job
+	stopChan    chan struct{}
+	busyCount   atomic.Int32
 	wg          sync.WaitGroup
 }
 
-func NewWorkerPool[T any](opts ...WorkerPoolOpt[T]) *WorkerPool[T] {
-	wp := &WorkerPool[T]{}
+func NewWorkerPool(opts ...WorkerPoolOpt) *WorkerPool {
+	wp := &WorkerPool{}
 
 	for _, opt := range opts {
 		opt(wp)
@@ -50,12 +58,13 @@ func NewWorkerPool[T any](opts ...WorkerPoolOpt[T]) *WorkerPool[T] {
 		wp.capacity = 128
 	}
 
-	wp.jobChan = make(chan Job[T], wp.capacity)
+	wp.jobChan = make(chan Job, wp.capacity)
+	wp.stopChan = make(chan struct{})
 
 	return wp
 }
 
-func (wp *WorkerPool[T]) Start(ctx context.Context) {
+func (wp *WorkerPool) Start(ctx context.Context) {
 	for range wp.workerCount {
 		wp.wg.Add(1)
 		go wp.worker(ctx)
@@ -65,26 +74,34 @@ func (wp *WorkerPool[T]) Start(ctx context.Context) {
 	go wp.retryLoop(ctx)
 }
 
-func (wp *WorkerPool[T]) Stop() {
+// Stop блокируется, пока jobsQ и retryQ не опустеют и все воркеры не станут
+// свободны — иначе задачи, ждущие ретрая, потерялись бы при остановке.
+func (wp *WorkerPool) Stop() {
+	for wp.jobsQ.Size() != 0 || wp.retryQ.Size() != 0 || len(wp.jobChan) != 0 || wp.busyCount.Load() != 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	close(wp.stopChan)
 	close(wp.jobChan)
 	wp.wg.Wait()
 }
 
-func (wp *WorkerPool[T]) Submit(event T, handler func(T) error) {
-	wp.jobChan <- Job[T]{event: event, handler: handler}
+func (wp *WorkerPool) Submit(task Task) {
+	wp.jobChan <- Job{task: task}
 }
 
-func (wp *WorkerPool[T]) TrySubmit(value T, handler func(T) error) bool {
+func (wp *WorkerPool) TrySubmit(task Task) bool {
 	select {
-	case wp.jobChan <- Job[T]{event: value, handler: handler}:
+	case wp.jobChan <- Job{task: task}:
 		return true
 	default:
 		return false
 	}
 }
 
-func (wp *WorkerPool[T]) worker(ctx context.Context) {
+func (wp *WorkerPool) worker(ctx context.Context) {
 	defer wp.wg.Done()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -94,17 +111,23 @@ func (wp *WorkerPool[T]) worker(ctx context.Context) {
 				return
 			}
 
-			if err := job.handler(job.event); err != nil {
+			wp.busyCount.Add(1)
+
+			if err := job.task.Do(ctx); err != nil {
 				wp.moveToRetry(job)
 			}
+
+			wp.busyCount.Add(-1)
 		}
 	}
 }
 
-func (wp *WorkerPool[T]) jobsLoop(ctx context.Context) {
+func (wp *WorkerPool) jobsLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-wp.stopChan:
 			return
 		default:
 			job, ok := wp.jobsQ.Dequeue()
@@ -119,10 +142,12 @@ func (wp *WorkerPool[T]) jobsLoop(ctx context.Context) {
 	}
 }
 
-func (wp *WorkerPool[T]) retryLoop(ctx context.Context) {
+func (wp *WorkerPool) retryLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-wp.stopChan:
 			return
 		default:
 			for {
@@ -131,12 +156,12 @@ func (wp *WorkerPool[T]) retryLoop(ctx context.Context) {
 					break
 				}
 
-				itemPQ, ok := item.(*ItemPQ[Job[T]])
+				itemPQ, ok := item.(*ItemPQ[Job])
 				if !ok {
 					break
 				}
 
-				if itemPQ.waitToTime > time.Now().Unix() {
+				if itemPQ.waitToTime > time.Now().UnixNano() {
 					break
 				}
 
@@ -153,8 +178,10 @@ func (wp *WorkerPool[T]) retryLoop(ctx context.Context) {
 	}
 }
 
-func (wp *WorkerPool[T]) moveToRetry(job Job[T]) {
-	wp.retryQ.Enqueue(&ItemPQ[Job[T]]{
+func (wp *WorkerPool) moveToRetry(job Job) {
+	job.waitToTime = time.Now().Add(job.task.GetWaitDuration()).UnixNano()
+
+	wp.retryQ.Enqueue(&ItemPQ[Job]{
 		Value:      job,
 		waitToTime: job.waitToTime,
 	})

@@ -39,7 +39,7 @@ func (pq *PriorityQueue[T]) Swap(i, j int) {
 	pq.items[j].index = j
 }
 
-func (pq *PriorityQueue[T]) Push(x interface{}) {
+func (pq *PriorityQueue[T]) Push(x any) {
 	item, ok := x.(*ItemPQ[T])
 	if !ok {
 		return
@@ -49,7 +49,7 @@ func (pq *PriorityQueue[T]) Push(x interface{}) {
 	pq.items = append(pq.items, item)
 }
 
-func (pq *PriorityQueue[T]) Pop() interface{} {
+func (pq *PriorityQueue[T]) Pop() any {
 	n := len(pq.items)
 	item := pq.items[n-1]
 	item.index = -1
@@ -59,9 +59,10 @@ func (pq *PriorityQueue[T]) Pop() interface{} {
 	return item
 }
 
-func (pq *PriorityQueue[T]) Top() interface{} {
+func (pq *PriorityQueue[T]) Top() any {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
+
 	n := len(pq.items)
 	if n == 0 {
 		return nil

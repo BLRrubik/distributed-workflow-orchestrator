@@ -29,6 +29,7 @@ func Load() (*Config, error) {
 	}
 
 	var config Config
+
 	err = yaml.Unmarshal(bytes, &config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)

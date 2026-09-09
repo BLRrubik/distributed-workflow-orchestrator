@@ -7,6 +7,7 @@ import (
 )
 
 type Scheduler struct {
+	workersRegistry []domain.WorkerNode //nolint:unused
 }
 
 // Assign — вызывается по таймеру/событию. Забирает задачи из очереди READY
@@ -16,6 +17,6 @@ func (s *Scheduler) Assign(ctx context.Context) error {
 }
 
 // SelectWorker — алгоритм подбора. Начните с простого, усложняйте по мере роста требований.
-func (s *Scheduler) SelectWorker(task domain.Task) (string, error) {
+func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) (string, error) {
 	return "", nil
 }

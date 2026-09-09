@@ -68,7 +68,6 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID, taskID
 
 func (e *WorkflowEngine) UpdateTaskStatus(ctx context.Context, task *domain.Task, newStatus domain.TaskStatus) bool {
 	// metrics there
-
 	if err := task.UpdateStatus(newStatus); err != nil {
 		e.log.Info(
 			"workflow status was not changed",
