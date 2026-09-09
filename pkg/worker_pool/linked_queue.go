@@ -2,31 +2,31 @@ package wp
 
 import "sync"
 
-type Item[T any] struct {
-	value T
-	next  *Item[T]
+type Item struct {
+	value Job
+	next  *Item
 }
 
-type LinkedQueue[T any] struct {
-	head *Item[T]
-	tail *Item[T]
+type LinkedQueue struct {
+	head *Item
+	tail *Item
 	size int
 	mu   sync.Mutex
 }
 
-func NewLinkedQueue[T any]() *LinkedQueue[T] {
-	return &LinkedQueue[T]{
+func NewLinkedQueue() *LinkedQueue {
+	return &LinkedQueue{
 		head: nil,
 		tail: nil,
 		size: 0,
 	}
 }
 
-func (q *LinkedQueue[T]) Queue(value T) {
+func (q *LinkedQueue) Queue(value Job) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	item := &Item[T]{
+	item := &Item{
 		value: value,
 	}
 
@@ -41,12 +41,12 @@ func (q *LinkedQueue[T]) Queue(value T) {
 	q.size++
 }
 
-func (q *LinkedQueue[T]) Dequeue() (T, bool) {
+func (q *LinkedQueue) Dequeue() (Job, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	if q.head == nil {
-		var zero T
+		var zero Job
 
 		return zero, false
 	}
@@ -64,7 +64,7 @@ func (q *LinkedQueue[T]) Dequeue() (T, bool) {
 	return head.value, true
 }
 
-func (q *LinkedQueue[T]) Size() int {
+func (q *LinkedQueue) Size() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

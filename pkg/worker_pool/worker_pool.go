@@ -35,8 +35,8 @@ func WithCapacity(capacity int) WorkerPoolOpt {
 type WorkerPool struct {
 	workerCount int
 	capacity    int
-	jobsQ       LinkedQueue[Job]
-	retryQ      PriorityQueue[Job]
+	jobsQ       LinkedQueue
+	retryQ      PriorityQueue
 	jobChan     chan Job
 	stopChan    chan struct{}
 	busyCount   atomic.Int32
@@ -156,7 +156,7 @@ func (wp *WorkerPool) retryLoop(ctx context.Context) {
 					break
 				}
 
-				itemPQ, ok := item.(*ItemPQ[Job])
+				itemPQ, ok := item.(*ItemPQ)
 				if !ok {
 					break
 				}
@@ -181,7 +181,7 @@ func (wp *WorkerPool) retryLoop(ctx context.Context) {
 func (wp *WorkerPool) moveToRetry(job Job) {
 	job.waitToTime = time.Now().Add(job.task.GetWaitDuration()).UnixNano()
 
-	wp.retryQ.Enqueue(&ItemPQ[Job]{
+	wp.retryQ.Enqueue(&ItemPQ{
 		Value:      job,
 		waitToTime: job.waitToTime,
 	})

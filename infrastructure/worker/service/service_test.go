@@ -18,13 +18,19 @@ import (
 func newTestService(t *testing.T, opts ...wp.WorkerPoolOpt) *WorkerService {
 	t.Helper()
 
-	pool := wp.NewWorkerPool(opts...)
-	ws := NewWorkerService(t.Context(), pool, executor.NewExecutors(), logger.New(logger.ERROR, false))
+	// НЕ t.Context(): он отменяется прямо перед вызовом Cleanup-функций (по
+	// документации testing), а Stop() ниже сам вызывается из Cleanup и должен
+	// успеть догрести очередь, пока ctx ещё жив — иначе ShellTask.Do получает
+	// уже отменённый ctx и Stop() виснет, ожидая опустошения очереди.
+	ctx, cancel := context.WithCancel(context.Background())
 
-	// Stop() должен успеть догрести очередь, пока ctx ещё жив — ShellTask.Do
-	// использует ctx пула напрямую, а t.Context() отменится только после этого
-	// cleanup (регистрируется раньше — сработает позже, LIFO)
-	t.Cleanup(pool.Stop)
+	pool := wp.NewWorkerPool(opts...)
+	ws := NewWorkerService(ctx, pool, executor.NewExecutors(), logger.New(logger.ERROR, false))
+
+	t.Cleanup(func() {
+		pool.Stop()
+		cancel()
+	})
 
 	return ws
 }

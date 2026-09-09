@@ -5,42 +5,42 @@ import (
 	"sync"
 )
 
-type ItemPQ[T any] struct {
-	Value      T
+type ItemPQ struct {
+	Value      Job
 	index      int
 	waitToTime int64
 }
 
-type PriorityQueue[T any] struct {
-	items []*ItemPQ[T]
+type PriorityQueue struct {
+	items []*ItemPQ
 	seq   uint64
 	mux   sync.Mutex
 }
 
-func NewPriorityQueue[T any]() *PriorityQueue[T] {
-	pq := &PriorityQueue[T]{}
-	pq.items = make([]*ItemPQ[T], 0)
+func NewPriorityQueue() *PriorityQueue {
+	pq := &PriorityQueue{}
+	pq.items = make([]*ItemPQ, 0)
 	heap.Init(pq)
 
 	return pq
 }
 
-func (pq *PriorityQueue[T]) Len() int {
+func (pq *PriorityQueue) Len() int {
 	return len(pq.items)
 }
 
-func (pq *PriorityQueue[T]) Less(i, j int) bool {
+func (pq *PriorityQueue) Less(i, j int) bool {
 	return pq.items[i].waitToTime < pq.items[j].waitToTime
 }
 
-func (pq *PriorityQueue[T]) Swap(i, j int) {
+func (pq *PriorityQueue) Swap(i, j int) {
 	pq.items[i], pq.items[j] = pq.items[j], pq.items[i]
 	pq.items[i].index = i
 	pq.items[j].index = j
 }
 
-func (pq *PriorityQueue[T]) Push(x any) {
-	item, ok := x.(*ItemPQ[T])
+func (pq *PriorityQueue) Push(x any) {
+	item, ok := x.(*ItemPQ)
 	if !ok {
 		return
 	}
@@ -49,7 +49,7 @@ func (pq *PriorityQueue[T]) Push(x any) {
 	pq.items = append(pq.items, item)
 }
 
-func (pq *PriorityQueue[T]) Pop() any {
+func (pq *PriorityQueue) Pop() any {
 	n := len(pq.items)
 	item := pq.items[n-1]
 	item.index = -1
@@ -59,7 +59,7 @@ func (pq *PriorityQueue[T]) Pop() any {
 	return item
 }
 
-func (pq *PriorityQueue[T]) Top() any {
+func (pq *PriorityQueue) Top() any {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
 
@@ -71,12 +71,12 @@ func (pq *PriorityQueue[T]) Top() any {
 	return pq.items[0]
 }
 
-func (pq *PriorityQueue[T]) Update(item *ItemPQ[T], value T) {
+func (pq *PriorityQueue) Update(item *ItemPQ, value Job) {
 	item.Value = value
 	heap.Fix(pq, item.index)
 }
 
-func (pq *PriorityQueue[T]) Enqueue(item *ItemPQ[T]) {
+func (pq *PriorityQueue) Enqueue(item *ItemPQ) {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
 
@@ -84,33 +84,36 @@ func (pq *PriorityQueue[T]) Enqueue(item *ItemPQ[T]) {
 
 	heap.Push(pq, item)
 }
-func (pq *PriorityQueue[T]) Dequeue() (T, bool) {
+
+func (pq *PriorityQueue) Dequeue() (Job, bool) {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
 
 	if len(pq.items) == 0 {
-		var zero T
+		var zero Job
+
 		return zero, false
 	}
 
-	item, _ := heap.Pop(pq).(*ItemPQ[T])
+	item, _ := heap.Pop(pq).(*ItemPQ)
 
 	return item.Value, true
 }
 
-func (pq *PriorityQueue[T]) Peek() (T, bool) {
+func (pq *PriorityQueue) Peek() (Job, bool) {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
 
 	if len(pq.items) == 0 {
-		var zero T
+		var zero Job
+
 		return zero, false
 	}
 
 	return pq.items[0].Value, true
 }
 
-func (pq *PriorityQueue[T]) Size() int {
+func (pq *PriorityQueue) Size() int {
 	pq.mux.Lock()
 	defer pq.mux.Unlock()
 
