@@ -10,7 +10,7 @@ type Task struct {
 	WorkflowID   string
 	Name         string
 	DependsOn    []string // рёбра графа: этот таск ждёт завершения перечисленных
-	Command      TaskSpec // что именно выполнять
+	Spec         TaskSpec // что именно выполнять
 	MaxRetries   int
 	RetryBackoff time.Duration
 	Timeout      time.Duration

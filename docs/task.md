@@ -32,7 +32,7 @@
 | 2.2 | Поднять `cmd/worker/main.go`: gRPC-сервер, реализующий `Dispatch` заглушкой (просто логирует полученную задачу) | `go run ./cmd/worker` стартует, `grpcurl` до `Dispatch` получает ответ |
 | 2.3 | Реализовать `ShellExecutor` (§6.4) | Юнит-тест: `Execute(ctx, {cmd: "echo hello"})` возвращает `TaskResult{ExitCode: 0, Stdout: "hello\n"}` |
 | 2.4 | Реализовать `WorkerRegistry` (§6.1, пока без health-check) и `Scheduler.assignOnce` + `SelectWorker` (§5) в самом простом виде — единственный захардкоженный воркер | Задача в статусе `READY` подхватывается планировщиком и логируется как назначенная |
-| 2.5 | Связать control-plane и воркер по-настоящему: control-plane реально вызывает `Dispatch` по gRPC, воркер реально исполняет и шлёт `ReportResult` | Отправка workflow из 1.6 приводит к реальному запуску процесса на воркере и получению результата назад |
+| 2.5 | Реализовать `GRPCWorkerClient` (§6.1) и подключить его к `Scheduler` — теперь `commitAssignment` реально вызывает `WorkerRPC.Dispatch` по сети, а не логирует | Отправка workflow из 1.6 приводит к реальному запуску процесса на воркере и получению результата назад |
 | 2.6 | Прогнать полный DAG `build → test → deploy` из этапа 1 через реального воркера | Все 3 задачи выполняются по очереди (с учётом зависимостей), workflow переходит в `SUCCEEDED` |
 
 **Definition of Done этапа:** `orc submit workflow.yaml` → реальный `go build`/`go test`/`deploy.sh` выполняются на воркере, статусы обновляются по факту исполнения.

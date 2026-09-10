@@ -12,10 +12,12 @@ import (
 )
 
 type WorkerRegistry struct {
-	mu         sync.RWMutex
-	workers    map[string]*domain.WorkerNode // ключ — WorkerNode.ID
-	retryQueue *rq.RetryQueue                // pkg/retryqueue — health-check по dead man's switch
-	log        *logger.Logger
+	mu  sync.RWMutex
+	log *logger.Logger
+
+	workers     map[string]*domain.WorkerNode // ключ — WorkerNode.ID
+	retryQueue  *rq.RetryQueue                // pkg/retryqueue — health-check по dead man's switch
+	onDeadHooks []func(workerID string)
 }
 
 func NewWorkerRegistry(log *logger.Logger) *WorkerRegistry {
@@ -58,6 +60,11 @@ func (r *WorkerRegistry) Register(w domain.WorkerNode) error {
 	))
 
 	return nil
+}
+
+// OnWorkerDead — регистрация колбэка.
+func (r *WorkerRegistry) OnWorkerDead(hook func(workerID string)) {
+	r.onDeadHooks = append(r.onDeadHooks, hook)
 }
 
 // Heartbeat — обработчик ClusterService.Heartbeat (§6.2).
@@ -114,4 +121,20 @@ func (r *WorkerRegistry) markDead(workerID string) {
 	}
 
 	wnode.SetDead()
+
+	for _, hook := range r.onDeadHooks {
+		hook(workerID)
+	}
+}
+
+func (r *WorkerRegistry) AddressOf(workerID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	wnode, ok := r.workers[workerID]
+	if !ok {
+		return ""
+	}
+
+	return wnode.Address
 }

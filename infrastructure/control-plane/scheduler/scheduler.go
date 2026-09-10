@@ -3,24 +3,33 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
 )
 
 type Scheduler struct {
 	workerRegistry *orchestration.WorkerRegistry
+	workerClient   *client.GRPCWorkerClient
 	queue          *ReadyQueue
 	log            *logger.Logger
 }
 
-func New(workerRegistry *orchestration.WorkerRegistry, log *logger.Logger) *Scheduler {
+func New(
+	workerRegistry *orchestration.WorkerRegistry,
+	workerClient *client.GRPCWorkerClient,
+	log *logger.Logger,
+) *Scheduler {
 	return &Scheduler{
 		workerRegistry: workerRegistry,
 		queue:          NewReadyQueue(),
+		workerClient:   workerClient,
 		log:            log,
 	}
 }
@@ -90,6 +99,23 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 
 func (s *Scheduler) commitAssignment(ctx context.Context, task *domain.Task, workerID string) error {
 	s.log.Info("Committing assignment for task",
+		logger.String("task", task.ID),
+		logger.String("worker", workerID),
+	)
+
+	req := &protogen.DispatchRequest{
+		TaskId:         task.ID,
+		Type:           task.Spec.Type,
+		Payload:        task.Spec.Payload,
+		TimeoutSeconds: int64(task.Timeout.Seconds()),
+	}
+
+	_, err := s.workerClient.Dispatch(ctx, workerID, req)
+	if err != nil {
+		return fmt.Errorf("failed to commit assignment for task %s: %v", task.ID, err)
+	}
+
+	s.log.Info("Assigned assignment for task",
 		logger.String("task", task.ID),
 		logger.String("worker", workerID),
 	)

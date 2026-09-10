@@ -402,6 +402,7 @@ package scheduler
 
 type Scheduler struct {
 	workerRegistry *orchestration.WorkerRegistry // §6.1
+	workerClient   orchestration.WorkerClient     // §6.1 — gRPC-клиент к WorkerRPC.Dispatch
 	queue          *ReadyQueue                    // задачи в статусе READY, ждущие назначения
 	retryQueue     *retryqueue.RetryQueue         // pkg/retryqueue, см. §5.2
 }
@@ -459,7 +460,7 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 			s.queue.Push(task) // нет подходящего воркера прямо сейчас — вернуть, попробуем на след. тике
 			continue
 		}
-		if err := s.commitAssignment(ctx, task.ID, workerID); err != nil {
+		if err := s.commitAssignment(ctx, task, workerID); err != nil {
 			s.queue.Push(task) // не прошло через Raft (например, потеряли лидерство) — вернуть
 			continue
 		}
@@ -472,14 +473,25 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 **Retry самой задачи** (`Task.MaxRetries`/`RetryBackoff`) удобно завести через `pkg/retryqueue` — тот же паттерн "повторяй, пока не false, с таймаутом между попытками":
 
 ```go
-func (s *Scheduler) commitAssignment(ctx context.Context, taskID, workerID string) error {
-	// ... провести CmdAssignTask через Raft, вызвать Dispatch ...
+func (s *Scheduler) commitAssignment(ctx context.Context, task domain.Task, workerID string) error {
+	// 1. провести CmdAssignTask через Raft — коммитим РЕШЕНИЕ, ещё до реального сетевого вызова
+	if err := s.raftAssignTask(ctx, task.ID, workerID); err != nil {
+		return err
+	}
 
+	// 2. только после коммита — реальный gRPC-вызов воркеру
+	req := util.TaskToDispatchRequest(task) // common/util, конвертер domain.Task -> workerpb.DispatchRequest
+	resp, err := s.workerClient.Dispatch(ctx, workerID, req)
+	if err != nil || !resp.Accepted {
+		return fmt.Errorf("dispatch to worker %s failed: %w", workerID, err)
+	}
+
+	// 3. завести наблюдение за задачей — жива ли она, не пора ли retry
 	s.retryQueue.Push(retryqueue.CommonRetryTrigger{
-		Key:     taskID,
+		Key:     task.ID,
 		Timeout: task.RetryBackoff,
 		Do: func(ctx context.Context) bool {
-			status := s.engine.TaskStatus(taskID)
+			status := s.engine.TaskStatus(task.ID)
 			if status == domain.TaskSucceeded {
 				return false // готово — больше не проверяем
 			}
@@ -487,7 +499,7 @@ func (s *Scheduler) commitAssignment(ctx context.Context, taskID, workerID strin
 				return false // попытки исчерпаны
 			}
 			if status == domain.TaskFailed {
-				s.queue.Push(task) // вернуть в очередь на новую попытку
+				s.queue.Push(task.ID) // вернуть в очередь на новую попытку
 			}
 			return true // продолжаем следить
 		},
@@ -506,14 +518,30 @@ func (s *Scheduler) commitAssignment(ctx context.Context, taskID, workerID strin
 
 Реестр живых воркеров — держит кластерное состояние и здоровье каждого воркера. Живёт на control-plane, доступен и `Scheduler`, и health-check циклу.
 
+**Важно про зависимости:** `WorkerRegistry` — низкоуровневый компонент (§14.2), он не должен импортировать `WorkerClient`/gRPC-детали, чтобы закрыть соединение при смерти воркера. Вместо прямого вызова — Observer-паттерн: `Registry` хранит список колбэков `func(workerID string)` и зовёт их всех, когда воркер умер, не зная, что конкретно эти колбэки делают.
+
 ```go
 // infrastructure/control-plane/orchestration/registry.go
 package orchestration
 
 type WorkerRegistry struct {
-	mu         sync.RWMutex
-	workers    map[string]*domain.WorkerNode // ключ — WorkerNode.ID
-	retryQueue *retryqueue.RetryQueue        // pkg/retryqueue — health-check по dead man's switch
+	mu          sync.RWMutex
+	workers     map[string]*domain.WorkerNode // ключ — WorkerNode.ID
+	retryQueue  *retryqueue.RetryQueue         // pkg/retryqueue — health-check по dead man's switch
+	onDeadHooks []func(workerID string)        // подписчики на "воркер умер"; Registry не знает, что внутри
+}
+
+func NewWorkerRegistry(retryQueue *retryqueue.RetryQueue) *WorkerRegistry {
+	return &WorkerRegistry{
+		workers:    make(map[string]*domain.WorkerNode),
+		retryQueue: retryQueue,
+	}
+}
+
+// OnWorkerDead — регистрация подписчика. Вызывается один раз при сборке зависимостей в main.go,
+// ДО того как в реестр начнут регистрироваться воркеры.
+func (r *WorkerRegistry) OnWorkerDead(hook func(workerID string)) {
+	r.onDeadHooks = append(r.onDeadHooks, hook)
 }
 
 // Register — обработчик ClusterService.Register (§6.2)
@@ -524,7 +552,87 @@ func (r *WorkerRegistry) Heartbeat(workerID string, runningTasks int) error
 
 func (r *WorkerRegistry) AliveWorkers() []domain.WorkerNode
 func (r *WorkerRegistry) IncrementRunning(workerID string)
+func (r *WorkerRegistry) AddressOf(workerID string) string // нужен WorkerClient, см. ниже
 ```
+
+**`WorkerClient`** — то, чем `Scheduler` реально стучится к воркеру по сети (§5.2, `commitAssignment`). Заведён отдельно от `WorkerRegistry`, чтобы `Scheduler` зависел только от узкого контракта "могу отправить задачу", а не от всего реестра с его health-check и мутациями. `WorkerClient`, в свою очередь, ничего не знает про `WorkerRegistry` как тип — только про узкий `addressResolver`:
+
+```go
+// infrastructure/control-plane/orchestration/worker_client.go
+package orchestration
+
+// WorkerClient — контракт, которого достаточно Scheduler'у. Реализуется GRPCWorkerClient ниже,
+// но в тестах Scheduler подставляет мок этого интерфейса, не поднимая реальную сеть.
+type WorkerClient interface {
+	Dispatch(ctx context.Context, workerID string, req *workerpb.DispatchRequest) (*workerpb.DispatchResponse, error)
+}
+
+// addressResolver — то немногое, что нужно от WorkerRegistry: только чтение адреса.
+// *WorkerRegistry уже удовлетворяет этому интерфейсу неявно — ничего дополнительно делать не нужно.
+type addressResolver interface {
+	AddressOf(workerID string) string
+}
+
+// GRPCWorkerClient — держит переиспользуемые gRPC-соединения к воркерам, по одному на воркера.
+type GRPCWorkerClient struct {
+	mu       sync.Mutex
+	conns    map[string]*grpc.ClientConn
+	resolver addressResolver
+}
+
+func NewGRPCWorkerClient(resolver addressResolver) *GRPCWorkerClient {
+	return &GRPCWorkerClient{
+		conns:    make(map[string]*grpc.ClientConn),
+		resolver: resolver,
+	}
+}
+
+func (c *GRPCWorkerClient) Dispatch(ctx context.Context, workerID string, req *workerpb.DispatchRequest) (*workerpb.DispatchResponse, error) {
+	conn, err := c.getOrDial(workerID)
+	if err != nil {
+		return nil, err
+	}
+	return workerpb.NewWorkerRPCClient(conn).Dispatch(ctx, req)
+}
+
+func (c *GRPCWorkerClient) getOrDial(workerID string) (*grpc.ClientConn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn, ok := c.conns[workerID]; ok {
+		return conn, nil
+	}
+	addr := c.resolver.AddressOf(workerID)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	c.conns[workerID] = conn
+	return conn, nil
+}
+
+// CloseConn — сигнатура подходит под func(workerID string), поэтому её можно напрямую
+// передать в registry.OnWorkerDead без обёрток
+func (c *GRPCWorkerClient) CloseConn(workerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn, ok := c.conns[workerID]; ok {
+		conn.Close()
+		delete(c.conns, workerID)
+	}
+}
+```
+
+Сборка в `cmd/control-plane/main.go` — единственное место во всей системе, где `WorkerRegistry` и `WorkerClient` вообще узнают друг о друге:
+
+```go
+registry := orchestration.NewWorkerRegistry(retryQueue)
+workerClient := orchestration.NewGRPCWorkerClient(registry) // *WorkerRegistry неявно реализует addressResolver
+registry.OnWorkerDead(workerClient.CloseConn)                // подписка: сигнатуры совпадают один в один
+
+sched := scheduler.New(registry, workerClient, readyQueue, retryQueue)
+```
+
+Если позже понадобится ещё один подписчик на "воркер умер" (например, метрика `worker_deaths_total` или пересчёт квот тенанта) — это ещё одна строчка `registry.OnWorkerDead(...)` в `main.go`, без единой правки в `WorkerRegistry` или `WorkerClient`.
 
 ### 6.2 Протокол (регистрация, heartbeat, диспатч)
 
@@ -610,8 +718,8 @@ func (r *WorkerRegistry) Register(w domain.WorkerNode) error {
 		Do: func(ctx context.Context) bool {
 			worker := r.workers[w.ID]
 			if time.Since(worker.LastHeartbeat) > heartbeatGracePeriod {
-				r.markDead(w.ID) // переводит DISPATCHED/RUNNING задачи обратно в READY через Raft
-				return false     // хватит проверять — воркер мёртв
+				r.markDead(w.ID)
+				return false // хватит проверять — воркер мёртв
 			}
 			return true // ещё жив, продолжаем следить
 		},
@@ -629,9 +737,24 @@ func (r *WorkerRegistry) Heartbeat(workerID string, runningTasks int) error {
 	worker.RunningTasks = runningTasks
 	return nil
 }
+
+func (r *WorkerRegistry) markDead(workerID string) {
+	r.mu.Lock()
+	r.workers[workerID].Status = domain.WorkerDead
+	r.mu.Unlock()
+
+	// вернуть DISPATCHED/RUNNING задачи этого воркера в READY — команда через Raft, не прямая мутация
+	r.reassignTasksOf(workerID)
+
+	// уведомить подписчиков — Registry не знает, что именно они делают (закрыть gRPC-соединение,
+	// инкрементировать метрику и т.п.), это их дело
+	for _, hook := range r.onDeadHooks {
+		hook(workerID)
+	}
+}
 ```
 
-`markDead` переводит статус на `WorkerDead`, а все его `DISPATCHED`/`RUNNING` задачи — обратно в `READY` (это тоже команда через Raft, не прямая мутация состояния). Это идемпотентная операция — учитывайте, что старый воркер может "ожить" и всё же прислать результат: игнорируйте `ReportResult`, если задача уже переназначена другому `AssignedTo`.
+Это идемпотентная операция — учитывайте, что старый воркер может "ожить" и всё же прислать результат: игнорируйте `ReportResult`, если задача уже переназначена другому `AssignedTo`.
 
 Это классическая проблема распределённых систем — **невозможно надёжно отличить "воркер упал" от "воркер медленный/сеть моргнула"**. Отсюда следует требование: задачи должны быть по возможности **идемпотентны**, либо система должна поддерживать at-least-once с дедупликацией по `ExecutionID`.
 
@@ -793,16 +916,16 @@ orc worker list
 ```yaml
 name: build-and-deploy
 tasks:
-  - id: build
-    command: {type: shell, cmd: "go build ./..."}
-  - id: test
-    depends_on: [build]
-    command: {type: shell, cmd: "go test ./..."}
-  - id: deploy
-    depends_on: [test]
-    command: {type: http, url: "https://deploy.internal/api", method: POST}
-    max_retries: 3
-    timeout: 60s
+   - id: build
+     command: {type: shell, cmd: "go build ./..."}
+   - id: test
+     depends_on: [build]
+     command: {type: shell, cmd: "go test ./..."}
+   - id: deploy
+     depends_on: [test]
+     command: {type: http, url: "https://deploy.internal/api", method: POST}
+     max_retries: 3
+     timeout: 60s
 ```
 
 ---
