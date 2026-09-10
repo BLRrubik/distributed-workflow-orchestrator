@@ -54,13 +54,6 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		wf.Tasks[i].WorkflowID = wf.ID
 		wf.Tasks[i].CreatedAt = time.Now()
 		wf.Tasks[i].UpdatedAt = time.Now()
-
-		// таски обычно приходят литералом без явного статуса — их zero-value
-		// это TaskStatusUnknown, а не TaskPending, из-за которого статус-машина
-		// отказывает в самом первом переходе (Unknown -> Ready запрещён)
-		if wf.Tasks[i].status == TaskStatusUnknown {
-			wf.Tasks[i].status = TaskPending
-		}
 	}
 
 	return wf, nil

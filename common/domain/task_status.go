@@ -11,15 +11,15 @@ var (
 type TaskStatus byte
 
 const (
-	TaskStatusUnknown TaskStatus = 0
-	TaskPending       TaskStatus = 1 // создана, ждёт, пока разрешатся зависимости
-	TaskReady         TaskStatus = 2 // зависимости выполнены, ждёт свободного воркера
-	TaskDispatched    TaskStatus = 3 // отправлена воркеру, ждём подтверждения
-	TaskRunning       TaskStatus = 4 // воркер подтвердил запуск
-	TaskSucceeded     TaskStatus = 5
-	TaskFailed        TaskStatus = 6
-	TaskRetrying      TaskStatus = 7
-	TaskCancelled     TaskStatus = 8
+	TaskPending       TaskStatus = 0 // создана, ждёт, пока разрешатся зависимости (zero-value по умолчанию)
+	TaskReady         TaskStatus = 1 // зависимости выполнены, ждёт свободного воркера
+	TaskDispatched    TaskStatus = 2 // отправлена воркеру, ждём подтверждения
+	TaskRunning       TaskStatus = 3 // воркер подтвердил запуск
+	TaskSucceeded     TaskStatus = 4
+	TaskFailed        TaskStatus = 5
+	TaskRetrying      TaskStatus = 6
+	TaskCancelled     TaskStatus = 7
+	TaskStatusUnknown TaskStatus = 8
 
 	TaskStatusCount = 9
 )
@@ -36,6 +36,7 @@ var taskStatusesGraph = [TaskStatusCount][TaskStatusCount]bool{
 	TaskDispatched: {
 		TaskRunning:   true,
 		TaskSucceeded: true,
+		TaskFailed:    true,
 		TaskCancelled: true,
 	},
 	TaskRunning: {

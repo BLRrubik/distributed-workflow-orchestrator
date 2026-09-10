@@ -53,7 +53,7 @@ func (t *ShellTask) Do(ctx context.Context) error {
 	}
 
 	status := protogen.TaskReportStatus_TASK_REPORT_SUCCEEDED
-	if len(result.Error) != 0 {
+	if result.ExitCode != 0 || len(result.Error) != 0 {
 		status = protogen.TaskReportStatus_TASK_REPORT_FAILED
 	}
 

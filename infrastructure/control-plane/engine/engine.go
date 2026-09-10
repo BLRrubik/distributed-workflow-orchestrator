@@ -63,6 +63,10 @@ func (e *WorkflowEngine) OnTaskResponse(ctx context.Context, workflowID, taskID 
 				logger.String("status", result.Status.String()),
 				logger.String("task", task.ID),
 			)
+
+			if result.Status == domain.TaskFailed {
+				e.cancelDownstream(ctx, wf, task.ID)
+			}
 		}
 	case domain.TaskRunning:
 		if e.UpdateTaskStatus(ctx, task, domain.TaskRunning) {
@@ -103,10 +107,10 @@ func (e *WorkflowEngine) UpdateTaskStatus(ctx context.Context, task *domain.Task
 			logger.Error(err),
 		)
 
-		return true
+		return false
 	}
 
-	return false
+	return true
 }
 
 func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.Context, wf *domain.Workflow, newStatus domain.WorkflowStatus) bool {
@@ -119,10 +123,10 @@ func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.Context, wf *domain.Wo
 			logger.Error(err),
 		)
 
-		return true
+		return false
 	}
 
-	return false
+	return true
 }
 
 // markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
@@ -138,10 +142,6 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow
 		if !ok {
 			e.log.Error("task not found by ready task", logger.String("task", readyTaskID))
 
-			continue
-		}
-
-		if readyTask.GetStatus() == domain.TaskReady {
 			continue
 		}
 
@@ -166,12 +166,48 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow
 	}
 }
 
+// cancelDownstream рекурсивно отменяет ещё не запущенные задачи, зависящие
+// (прямо или транзитивно) от упавшей rootID — без этого их AllDepsSucceeded
+// никогда не станет true, а значит workflow никогда не дойдёт до AllTasksFinished
+// и зависнет в RUNNING навсегда.
+func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) {
+	queue := []string{rootID}
+
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+
+		for _, t := range wf.Tasks {
+			if t.IsFinished() {
+				continue
+			}
+
+			for _, dep := range t.DependsOn {
+				if dep != id {
+					continue
+				}
+
+				if e.UpdateTaskStatus(ctx, t, domain.TaskCancelled) {
+					e.log.Info("task cancelled due to failed dependency",
+						logger.String("task", t.ID),
+						logger.String("failed_dependency", id),
+					)
+
+					queue = append(queue, t.ID)
+				}
+
+				break
+			}
+		}
+	}
+}
+
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач.
 func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string {
 	readyTasks := make([]string, 0, len(wf.Tasks))
 
 	for _, task := range wf.Tasks {
-		if task.IsFinished() || !task.AllDepsSucceeded(wf) {
+		if !task.IsReady() || !task.AllDepsSucceeded(wf) {
 			continue
 		}
 

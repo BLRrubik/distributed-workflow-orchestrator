@@ -24,6 +24,10 @@ type Task struct {
 	UpdatedAt    time.Time
 }
 
+func (t *Task) IsReady() bool {
+	return t.status == TaskPending || t.status == TaskRetrying
+}
+
 func (t *Task) IsFinished() bool {
 	return t.status == TaskSucceeded || t.status == TaskFailed || t.status == TaskCancelled
 }
@@ -35,7 +39,7 @@ func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 			continue
 		}
 
-		if !task.IsFinished() {
+		if task.GetStatus() != TaskSucceeded {
 			return false
 		}
 	}

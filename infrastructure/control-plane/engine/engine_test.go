@@ -121,6 +121,67 @@ func TestOnTaskResponse_FinalizesWorkflowAsSucceeded(t *testing.T) {
 	assert.True(t, wf.IsFinished())
 }
 
+func TestOnTaskResponse_FailedTaskCancelsDownstreamAndFinalizesAsFailed(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+
+	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
+	assert.NoError(t, err)
+
+	_, err = e.SubmitWorkflow(ctx, wf)
+	assert.NoError(t, err)
+
+	e.UpdateTaskStatus(ctx, wf.Tasks["build"], domain.TaskDispatched)
+	assert.NoError(t, e.OnTaskResponse(ctx, wf.ID, "build", domain.TaskResult{Status: domain.TaskFailed, ExitCode: 1}))
+
+	assert.Equal(t, domain.TaskFailed, wf.Tasks["build"].GetStatus())
+	assert.Equal(t, domain.TaskCancelled, wf.Tasks["test"].GetStatus(), "downstream task must be cancelled, otherwise workflow never finishes")
+	assert.Equal(t, domain.TaskCancelled, wf.Tasks["deploy"].GetStatus(), "transitively dependent task must be cancelled too")
+
+	assert.True(t, wf.IsFinished())
+	assert.Equal(t, domain.WorkflowFailed, wf.GetStatus())
+}
+
+func TestOnTaskResponse_IndependentChainUnaffectedByOtherChainFailure(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+
+	tasks := []domain.Task{
+		{ID: "build", Name: "build", DependsOn: []string{}},
+		{ID: "test", Name: "test", DependsOn: []string{"build"}},
+		{ID: "lint", Name: "lint", DependsOn: []string{}},
+		{ID: "publish", Name: "publish", DependsOn: []string{"lint"}},
+	}
+
+	wf, err := domain.NewWorkflow("tenant1", "wf1", tasks)
+	assert.NoError(t, err)
+
+	_, err = e.SubmitWorkflow(ctx, wf)
+	assert.NoError(t, err)
+
+	e.UpdateTaskStatus(ctx, wf.Tasks["build"], domain.TaskDispatched)
+	assert.NoError(t, e.OnTaskResponse(ctx, wf.ID, "build", domain.TaskResult{Status: domain.TaskFailed}))
+
+	assert.Equal(t, domain.TaskFailed, wf.Tasks["build"].GetStatus())
+	assert.Equal(t, domain.TaskCancelled, wf.Tasks["test"].GetStatus())
+
+	// падение одной цепочки не должно задевать другую, независимую
+	assert.Equal(t, domain.TaskReady, wf.Tasks["lint"].GetStatus(), "unrelated chain must not be cancelled")
+	assert.Equal(t, domain.TaskPending, wf.Tasks["publish"].GetStatus())
+	assert.False(t, wf.IsFinished(), "workflow must wait for the still-running independent chain")
+
+	e.UpdateTaskStatus(ctx, wf.Tasks["lint"], domain.TaskDispatched)
+	assert.NoError(t, e.OnTaskResponse(ctx, wf.ID, "lint", domain.TaskResult{Status: domain.TaskSucceeded}))
+	assert.Equal(t, domain.TaskReady, wf.Tasks["publish"].GetStatus())
+
+	e.UpdateTaskStatus(ctx, wf.Tasks["publish"], domain.TaskDispatched)
+	assert.NoError(t, e.OnTaskResponse(ctx, wf.ID, "publish", domain.TaskResult{Status: domain.TaskSucceeded}))
+
+	assert.True(t, wf.IsFinished())
+	assert.Equal(t, domain.WorkflowFailed, wf.GetStatus(),
+		"one failed chain must fail the whole workflow, even though the other chain succeeded")
+}
+
 func TestOnTaskResponse_WorkflowNotFound(t *testing.T) {
 	e := newTestEngine(t)
 	ctx := context.Background()
