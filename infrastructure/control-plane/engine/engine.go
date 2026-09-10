@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
@@ -39,9 +40,8 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf *domain.Workflow
 	return wf.ID, nil
 }
 
-// OnTaskCompleted вызывается, когда Scheduler получил результат от воркера.
-// Пересчитывает READY-множество для зависимых задач.
-func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID, taskID string, result domain.TaskResult) error {
+// OnTaskResponse обрабатывает хук о статусе задачи от воркера.
+func (e *WorkflowEngine) OnTaskResponse(ctx context.Context, workflowID, taskID string, result domain.TaskResult) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -55,12 +55,19 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID, taskID
 		return fmt.Errorf("task not found %s", taskID)
 	}
 
-	e.UpdateTaskStatus(ctx, task, domain.TaskDispatched)
-	e.UpdateTaskStatus(ctx, task, domain.TaskRunning)
-
-	if e.UpdateTaskStatus(ctx, task, domain.TaskSucceeded) {
-		task.SetResult(&result)
-		e.log.Info("task succeeded", logger.String("task", task.ID))
+	switch result.Status {
+	case domain.TaskFailed, domain.TaskSucceeded:
+		if e.UpdateTaskStatus(ctx, task, result.Status) {
+			task.SetResult(&result)
+			e.log.Info("task status updated",
+				logger.String("status", result.Status.String()),
+				logger.String("task", task.ID),
+			)
+		}
+	case domain.TaskRunning:
+		if e.UpdateTaskStatus(ctx, task, domain.TaskRunning) {
+			e.log.Info("task running", logger.String("task", task.ID))
+		}
 	}
 
 	e.markReadyTasks(ctx, wf)
@@ -69,11 +76,28 @@ func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID, taskID
 	return nil
 }
 
+// OnTaskDispatched — колбэк scheduler'а: вызывается после того, как задача
+// успешно ушла воркеру по gRPC. Берёт e.mu сам — вызывается из горутины
+// scheduler.Run, а не из-под уже захваченного замка engine.
+func (e *WorkflowEngine) OnTaskDispatched(ctx context.Context, task *domain.Task, workerID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	task.AssignedTo = workerID
+
+	if e.UpdateTaskStatus(ctx, task, domain.TaskDispatched) {
+		e.log.Info("task dispatched",
+			logger.String("task", task.ID),
+			logger.String("worker", workerID),
+		)
+	}
+}
+
 func (e *WorkflowEngine) UpdateTaskStatus(ctx context.Context, task *domain.Task, newStatus domain.TaskStatus) bool {
 	// metrics there
 	if err := task.UpdateStatus(newStatus); err != nil {
 		e.log.Info(
-			"workflow status was not changed",
+			"task status was not changed",
 			logger.String("task_id", task.ID),
 			logger.String("status", newStatus.String()),
 			logger.Error(err),
@@ -125,7 +149,20 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow
 			e.log.Info("task ready", logger.String("task", readyTask.ID))
 		}
 
-		e.scheduler.PushTask(readyTask)
+		e.scheduler.PushTask(scheduler.Job{
+			ID:         readyTask.ID,
+			WorkflowID: readyTask.WorkflowID,
+			Request: &protogen.DispatchRequest{
+				TaskId:         readyTask.ID,
+				WorkflowId:     readyTask.WorkflowID,
+				Type:           readyTask.Spec.Type,
+				Payload:        readyTask.Spec.Payload,
+				TimeoutSeconds: int64(readyTask.Timeout.Seconds()),
+			},
+			OnDispatched: func(ctx context.Context, workerID string) {
+				e.OnTaskDispatched(ctx, readyTask, workerID)
+			},
+		})
 	}
 }
 

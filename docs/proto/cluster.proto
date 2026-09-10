@@ -32,12 +32,21 @@ message HeartbeatResponse {
   bool acknowledged = 1;
 }
 
+enum TaskReportStatus {
+  TASK_REPORT_RUNNING = 0;
+  TASK_REPORT_SUCCEEDED = 1;
+  TASK_REPORT_FAILED = 2;
+}
+
 message ResultRequest {
-  string task_id = 1;
-  int32 exit_code = 2;
-  string stdout = 3;
-  string stderr = 4;
-  string error = 5;
+  string workflow_id = 1;
+  string task_id = 2;
+  TaskReportStatus status = 3;
+  int32 exit_code = 4;   // валиден только при status == SUCCEEDED/FAILED
+  string stdout = 5;
+  string stderr = 6;
+  string error = 7;
+  int64  duration = 8;
 }
 
 message ResultResponse {

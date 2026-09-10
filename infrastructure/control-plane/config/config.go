@@ -12,9 +12,6 @@ type Config struct {
 	GRPC struct {
 		Port string `yaml:"port"`
 	} `yaml:"grpc"`
-	Worker struct {
-		URL string `yaml:"url"`
-	} `yaml:"worker"`
 }
 
 func Load() (*Config, error) {

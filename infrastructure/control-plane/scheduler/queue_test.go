@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 )
 
 func TestReadyQueue_PopBatch_Empty(t *testing.T) {
@@ -19,9 +17,9 @@ func TestReadyQueue_PopBatch_Empty(t *testing.T) {
 func TestReadyQueue_PushPop_FIFO(t *testing.T) {
 	q := NewReadyQueue()
 
-	q.Push(&domain.Task{ID: "task-1"})
-	q.Push(&domain.Task{ID: "task-2"})
-	q.Push(&domain.Task{ID: "task-3"})
+	q.Push(Job{ID: "task-1"})
+	q.Push(Job{ID: "task-2"})
+	q.Push(Job{ID: "task-3"})
 
 	batch := q.PopBatch(10)
 
@@ -34,9 +32,9 @@ func TestReadyQueue_PushPop_FIFO(t *testing.T) {
 func TestReadyQueue_PopBatch_Partial(t *testing.T) {
 	q := NewReadyQueue()
 
-	q.Push(&domain.Task{ID: "task-1"})
-	q.Push(&domain.Task{ID: "task-2"})
-	q.Push(&domain.Task{ID: "task-3"})
+	q.Push(Job{ID: "task-1"})
+	q.Push(Job{ID: "task-2"})
+	q.Push(Job{ID: "task-3"})
 
 	first := q.PopBatch(2)
 	assert.Len(t, first, 2)
@@ -53,7 +51,7 @@ func TestReadyQueue_PopBatch_Partial(t *testing.T) {
 func TestReadyQueue_PopBatch_MoreThanAvailable(t *testing.T) {
 	q := NewReadyQueue()
 
-	q.Push(&domain.Task{ID: "task-1"})
+	q.Push(Job{ID: "task-1"})
 
 	batch := q.PopBatch(100)
 	assert.Len(t, batch, 1)
@@ -62,7 +60,7 @@ func TestReadyQueue_PopBatch_MoreThanAvailable(t *testing.T) {
 func TestReadyQueue_PopBatch_Zero(t *testing.T) {
 	q := NewReadyQueue()
 
-	q.Push(&domain.Task{ID: "task-1"})
+	q.Push(Job{ID: "task-1"})
 
 	batch := q.PopBatch(0)
 	assert.Empty(t, batch)
@@ -74,7 +72,7 @@ func TestReadyQueue_PopBatch_Zero(t *testing.T) {
 func TestReadyQueue_RequeueAfterPop(t *testing.T) {
 	q := NewReadyQueue()
 
-	q.Push(&domain.Task{ID: "task-1"})
+	q.Push(Job{ID: "task-1"})
 
 	batch := q.PopBatch(1)
 	assert.Len(t, batch, 1)
@@ -98,7 +96,7 @@ func TestReadyQueue_ConcurrentAccess(t *testing.T) {
 		defer wg.Done()
 
 		for range 200 {
-			q.Push(&domain.Task{ID: "task"})
+			q.Push(Job{ID: "task"})
 		}
 	}()
 

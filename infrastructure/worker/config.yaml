@@ -1,2 +1,11 @@
 grpc:
   port: ":8081"
+
+control_plane:
+  address: "localhost:8080"
+
+worker:
+  id: "worker-1"
+  address: "localhost:8081"
+  capacity: 100
+  pool: 2

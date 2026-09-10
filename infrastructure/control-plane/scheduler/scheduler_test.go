@@ -2,23 +2,58 @@ package scheduler
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
 )
 
 func newTestScheduler(t *testing.T) (*Scheduler, *orchestration.WorkerRegistry) {
 	t.Helper()
 
-	registry := orchestration.NewWorkerRegistry(logger.New(logger.ERROR, false))
-	s := New(registry, logger.New(logger.ERROR, false))
+	log := logger.New(logger.ERROR, false)
+	registry := orchestration.NewWorkerRegistry(log)
+	workerClient := client.NewWorkerClient(registry)
+	s := New(registry, workerClient, log)
 
 	return s, registry
+}
+
+type fakeWorkerServer struct {
+	protogen.UnimplementedWorkerServiceServer
+}
+
+func (fakeWorkerServer) Dispatch(context.Context, *protogen.DispatchRequest) (*protogen.DispatchResponse, error) {
+	return &protogen.DispatchResponse{Accepted: true}, nil
+}
+
+// newFakeWorkerAddr поднимает настоящий TCP-листенер с fake WorkerService —
+// GRPCWorkerClient дайлит по обычному host:port, без кастомного dialer'а под тест не залезть.
+func newFakeWorkerAddr(t *testing.T) string {
+	t.Helper()
+
+	var listenConfig net.ListenConfig
+
+	lis, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	srv := grpc.NewServer()
+	protogen.RegisterWorkerServiceServer(srv, fakeWorkerServer{})
+
+	go func() { _ = srv.Serve(lis) }()
+
+	t.Cleanup(srv.Stop)
+
+	return lis.Addr().String()
 }
 
 func TestScheduler_SelectWorker_EmptyWorkers(t *testing.T) {
@@ -58,7 +93,7 @@ func TestScheduler_SelectWorker_PicksLeastLoaded(t *testing.T) {
 func TestScheduler_PushTask(t *testing.T) {
 	s, _ := newTestScheduler(t)
 
-	s.PushTask(&domain.Task{ID: "task-1"})
+	s.PushTask(Job{ID: "task-1"})
 
 	batch := s.queue.PopBatch(10)
 	assert.Len(t, batch, 1)
@@ -79,7 +114,7 @@ func TestScheduler_AssignOnce_NoReadyTasks(t *testing.T) {
 func TestScheduler_AssignOnce_NoWorkers_RequeuesTask(t *testing.T) {
 	s, _ := newTestScheduler(t)
 
-	s.PushTask(&domain.Task{ID: "task-1"})
+	s.PushTask(Job{ID: "task-1"})
 
 	s.assignOnce(context.Background())
 
@@ -92,9 +127,17 @@ func TestScheduler_AssignOnce_NoWorkers_RequeuesTask(t *testing.T) {
 func TestScheduler_AssignOnce_AssignsToWorker(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Capacity: 5}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5}))
 
-	s.PushTask(&domain.Task{ID: "task-1"})
+	var dispatchedTo string
+
+	s.PushTask(Job{
+		ID:      "task-1",
+		Request: &protogen.DispatchRequest{TaskId: "task-1"},
+		OnDispatched: func(_ context.Context, workerID string) {
+			dispatchedTo = workerID
+		},
+	})
 
 	s.assignOnce(context.Background())
 
@@ -104,6 +147,9 @@ func TestScheduler_AssignOnce_AssignsToWorker(t *testing.T) {
 	// занятость воркера учтена локально, не дожидаясь heartbeat
 	workers := registry.AliveWorkers()
 	assert.Equal(t, 1, workers[0].RunningTasks)
+
+	// OnDispatched реально вызван после успешного Dispatch
+	assert.Equal(t, "w1", dispatchedTo)
 }
 
 func TestScheduler_AssignOnce_SkipsDeadWorkers(t *testing.T) {
@@ -113,7 +159,7 @@ func TestScheduler_AssignOnce_SkipsDeadWorkers(t *testing.T) {
 	dead.SetDead()
 	assert.NoError(t, registry.Register(dead))
 
-	s.PushTask(&domain.Task{ID: "task-1"})
+	s.PushTask(Job{ID: "task-1"})
 
 	s.assignOnce(context.Background())
 
@@ -125,9 +171,13 @@ func TestScheduler_AssignOnce_SkipsDeadWorkers(t *testing.T) {
 func TestScheduler_Run_AssignsOnTick(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Capacity: 5}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5}))
 
-	s.PushTask(&domain.Task{ID: "task-1"})
+	s.PushTask(Job{
+		ID:           "task-1",
+		Request:      &protogen.DispatchRequest{TaskId: "task-1"},
+		OnDispatched: func(context.Context, string) {},
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 

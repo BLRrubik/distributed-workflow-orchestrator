@@ -23,6 +23,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type TaskReportStatus int32
+
+const (
+	TaskReportStatus_TASK_REPORT_RUNNING   TaskReportStatus = 0
+	TaskReportStatus_TASK_REPORT_SUCCEEDED TaskReportStatus = 1
+	TaskReportStatus_TASK_REPORT_FAILED    TaskReportStatus = 2
+)
+
+// Enum value maps for TaskReportStatus.
+var (
+	TaskReportStatus_name = map[int32]string{
+		0: "TASK_REPORT_RUNNING",
+		1: "TASK_REPORT_SUCCEEDED",
+		2: "TASK_REPORT_FAILED",
+	}
+	TaskReportStatus_value = map[string]int32{
+		"TASK_REPORT_RUNNING":   0,
+		"TASK_REPORT_SUCCEEDED": 1,
+		"TASK_REPORT_FAILED":    2,
+	}
+)
+
+func (x TaskReportStatus) Enum() *TaskReportStatus {
+	p := new(TaskReportStatus)
+	*p = x
+	return p
+}
+
+func (x TaskReportStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TaskReportStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_cluster_proto_enumTypes[0].Descriptor()
+}
+
+func (TaskReportStatus) Type() protoreflect.EnumType {
+	return &file_cluster_proto_enumTypes[0]
+}
+
+func (x TaskReportStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TaskReportStatus.Descriptor instead.
+func (TaskReportStatus) EnumDescriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{0}
+}
+
 type RegisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
@@ -241,11 +290,15 @@ func (x *HeartbeatResponse) GetAcknowledged() bool {
 
 type ResultRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	ExitCode      int32                  `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
-	Stdout        string                 `protobuf:"bytes,3,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        string                 `protobuf:"bytes,4,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	Error         string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	TaskId        string                 `protobuf:"bytes,3,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Status        TaskReportStatus       `protobuf:"varint,4,opt,name=status,proto3,enum=entities.TaskReportStatus" json:"status,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,5,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // валиден только при status == SUCCEEDED/FAILED
+	Stdout        string                 `protobuf:"bytes,6,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr        string                 `protobuf:"bytes,7,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	Error         string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
+	Duration      int64                  `protobuf:"varint,9,opt,name=duration,proto3" json:"duration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -280,11 +333,32 @@ func (*ResultRequest) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{4}
 }
 
+func (x *ResultRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *ResultRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
 func (x *ResultRequest) GetTaskId() string {
 	if x != nil {
 		return x.TaskId
 	}
 	return ""
+}
+
+func (x *ResultRequest) GetStatus() TaskReportStatus {
+	if x != nil {
+		return x.Status
+	}
+	return TaskReportStatus_TASK_REPORT_RUNNING
 }
 
 func (x *ResultRequest) GetExitCode() int32 {
@@ -313,6 +387,13 @@ func (x *ResultRequest) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *ResultRequest) GetDuration() int64 {
+	if x != nil {
+		return x.Duration
+	}
+	return 0
 }
 
 type ResultResponse struct {
@@ -379,15 +460,24 @@ const file_cluster_proto_rawDesc = "" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
 	"\rrunning_tasks\x18\x02 \x01(\x05R\frunningTasks\"7\n" +
 	"\x11HeartbeatResponse\x12\"\n" +
-	"\facknowledged\x18\x01 \x01(\bR\facknowledged\"\x8b\x01\n" +
-	"\rResultRequest\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x1b\n" +
-	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
-	"\x06stdout\x18\x03 \x01(\tR\x06stdout\x12\x16\n" +
-	"\x06stderr\x18\x04 \x01(\tR\x06stderr\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\"4\n" +
+	"\facknowledged\x18\x01 \x01(\bR\facknowledged\"\x99\x02\n" +
+	"\rResultRequest\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1f\n" +
+	"\vworkflow_id\x18\x02 \x01(\tR\n" +
+	"workflowId\x12\x17\n" +
+	"\atask_id\x18\x03 \x01(\tR\x06taskId\x122\n" +
+	"\x06status\x18\x04 \x01(\x0e2\x1a.entities.TaskReportStatusR\x06status\x12\x1b\n" +
+	"\texit_code\x18\x05 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06stdout\x18\x06 \x01(\tR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\a \x01(\tR\x06stderr\x12\x14\n" +
+	"\x05error\x18\b \x01(\tR\x05error\x12\x1a\n" +
+	"\bduration\x18\t \x01(\x03R\bduration\"4\n" +
 	"\x0eResultResponse\x12\"\n" +
-	"\facknowledged\x18\x01 \x01(\bR\facknowledged2\xdc\x01\n" +
+	"\facknowledged\x18\x01 \x01(\bR\facknowledged*^\n" +
+	"\x10TaskReportStatus\x12\x17\n" +
+	"\x13TASK_REPORT_RUNNING\x10\x00\x12\x19\n" +
+	"\x15TASK_REPORT_SUCCEEDED\x10\x01\x12\x16\n" +
+	"\x12TASK_REPORT_FAILED\x10\x022\xdc\x01\n" +
 	"\x0eClusterService\x12A\n" +
 	"\bRegister\x12\x19.entities.RegisterRequest\x1a\x1a.entities.RegisterResponse\x12D\n" +
 	"\tHeartbeat\x12\x1a.entities.HeartbeatRequest\x1a\x1b.entities.HeartbeatResponse\x12A\n" +
@@ -405,29 +495,32 @@ func file_cluster_proto_rawDescGZIP() []byte {
 	return file_cluster_proto_rawDescData
 }
 
+var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_cluster_proto_goTypes = []any{
-	(*RegisterRequest)(nil),   // 0: entities.RegisterRequest
-	(*RegisterResponse)(nil),  // 1: entities.RegisterResponse
-	(*HeartbeatRequest)(nil),  // 2: entities.HeartbeatRequest
-	(*HeartbeatResponse)(nil), // 3: entities.HeartbeatResponse
-	(*ResultRequest)(nil),     // 4: entities.ResultRequest
-	(*ResultResponse)(nil),    // 5: entities.ResultResponse
-	nil,                       // 6: entities.RegisterRequest.LabelsEntry
+	(TaskReportStatus)(0),     // 0: entities.TaskReportStatus
+	(*RegisterRequest)(nil),   // 1: entities.RegisterRequest
+	(*RegisterResponse)(nil),  // 2: entities.RegisterResponse
+	(*HeartbeatRequest)(nil),  // 3: entities.HeartbeatRequest
+	(*HeartbeatResponse)(nil), // 4: entities.HeartbeatResponse
+	(*ResultRequest)(nil),     // 5: entities.ResultRequest
+	(*ResultResponse)(nil),    // 6: entities.ResultResponse
+	nil,                       // 7: entities.RegisterRequest.LabelsEntry
 }
 var file_cluster_proto_depIdxs = []int32{
-	6, // 0: entities.RegisterRequest.labels:type_name -> entities.RegisterRequest.LabelsEntry
-	0, // 1: entities.ClusterService.Register:input_type -> entities.RegisterRequest
-	2, // 2: entities.ClusterService.Heartbeat:input_type -> entities.HeartbeatRequest
-	4, // 3: entities.ClusterService.ReportResult:input_type -> entities.ResultRequest
-	1, // 4: entities.ClusterService.Register:output_type -> entities.RegisterResponse
-	3, // 5: entities.ClusterService.Heartbeat:output_type -> entities.HeartbeatResponse
-	5, // 6: entities.ClusterService.ReportResult:output_type -> entities.ResultResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	7, // 0: entities.RegisterRequest.labels:type_name -> entities.RegisterRequest.LabelsEntry
+	0, // 1: entities.ResultRequest.status:type_name -> entities.TaskReportStatus
+	1, // 2: entities.ClusterService.Register:input_type -> entities.RegisterRequest
+	3, // 3: entities.ClusterService.Heartbeat:input_type -> entities.HeartbeatRequest
+	5, // 4: entities.ClusterService.ReportResult:input_type -> entities.ResultRequest
+	2, // 5: entities.ClusterService.Register:output_type -> entities.RegisterResponse
+	4, // 6: entities.ClusterService.Heartbeat:output_type -> entities.HeartbeatResponse
+	6, // 7: entities.ClusterService.ReportResult:output_type -> entities.ResultResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_cluster_proto_init() }
@@ -440,13 +533,14 @@ func file_cluster_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_cluster_proto_goTypes,
 		DependencyIndexes: file_cluster_proto_depIdxs,
+		EnumInfos:         file_cluster_proto_enumTypes,
 		MessageInfos:      file_cluster_proto_msgTypes,
 	}.Build()
 	File_cluster_proto = out.File

@@ -1,30 +1,26 @@
 package scheduler
 
-import (
-	"sync"
-
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
-)
+import "sync"
 
 type ReadyQueue struct {
 	mu    sync.Mutex
-	items []*domain.Task // Task.ID, в порядке появления READY-статуса
+	items []Job
 }
 
 func NewReadyQueue() *ReadyQueue {
 	return &ReadyQueue{
-		items: make([]*domain.Task, 0),
+		items: make([]Job, 0),
 	}
 }
 
-func (q *ReadyQueue) Push(task *domain.Task) {
+func (q *ReadyQueue) Push(job Job) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	q.items = append(q.items, task)
+	q.items = append(q.items, job)
 }
 
-func (q *ReadyQueue) PopBatch(n int) []*domain.Task {
+func (q *ReadyQueue) PopBatch(n int) []Job {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

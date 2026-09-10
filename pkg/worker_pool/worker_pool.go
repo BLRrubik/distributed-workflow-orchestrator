@@ -99,6 +99,11 @@ func (wp *WorkerPool) TrySubmit(task Task) bool {
 	}
 }
 
+// BusyCount возвращает число задач, исполняемых прямо сейчас — для heartbeat.
+func (wp *WorkerPool) BusyCount() int32 {
+	return wp.busyCount.Load()
+}
+
 func (wp *WorkerPool) worker(ctx context.Context) {
 	defer wp.wg.Done()
 

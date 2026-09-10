@@ -12,6 +12,15 @@ type Config struct {
 	GRPC struct {
 		Port string `yaml:"port"`
 	} `yaml:"grpc"`
+	Worker struct {
+		ID       string `yaml:"id"`
+		Address  string `yaml:"address"` // куда control-plane будет диспатчить задачи
+		Capacity int    `yaml:"capacity"`
+		Pool     int    `yaml:"pool"`
+	} `yaml:"worker"`
+	ControlPlane struct {
+		Address string `yaml:"address"`
+	} `yaml:"control_plane"`
 }
 
 func Load() (*Config, error) {
@@ -38,4 +47,7 @@ func Load() (*Config, error) {
 func Print(cfg *Config) {
 	fmt.Println("-------CONFIG-------")
 	fmt.Println("GRPC Port:", cfg.GRPC.Port)
+	fmt.Println("Worker ID:", cfg.Worker.ID)
+	fmt.Println("Worker Address:", cfg.Worker.Address)
+	fmt.Println("Control Plane Address:", cfg.ControlPlane.Address)
 }

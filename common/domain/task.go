@@ -2,6 +2,8 @@ package domain
 
 import (
 	"time"
+
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 )
 
 // Task — узел графа выполнения (DAG node).
@@ -74,9 +76,23 @@ type TaskSpec struct {
 }
 
 type TaskResult struct {
+	Status   TaskStatus
 	ExitCode int
 	Stdout   string
 	Stderr   string
 	Error    string
 	Duration time.Duration
+}
+
+func FromProtoTaskStatus(status protogen.TaskReportStatus) TaskStatus {
+	switch status {
+	case protogen.TaskReportStatus_TASK_REPORT_RUNNING:
+		return TaskRunning
+	case protogen.TaskReportStatus_TASK_REPORT_FAILED:
+		return TaskFailed
+	case protogen.TaskReportStatus_TASK_REPORT_SUCCEEDED:
+		return TaskSucceeded
+	default:
+		return 0
+	}
 }
