@@ -30,8 +30,8 @@
 |---|---|---|
 | 2.1 | Написать `docs/proto/worker.proto` (`ClusterService`: `Register`, `Heartbeat`, `ReportResult` — сервер control-plane; `WorkerRPC`: `Dispatch` — сервер воркер) и сгенерировать код в `common/api/workerpb` | `protoc`/`buf generate` проходит без ошибок, пакет импортируется |
 | 2.2 | Поднять `cmd/worker/main.go`: gRPC-сервер, реализующий `Dispatch` заглушкой (просто логирует полученную задачу) | `go run ./cmd/worker` стартует, `grpcurl` до `Dispatch` получает ответ |
-| 2.3 | Реализовать `ShellExecutor` (§6.3) | Юнит-тест: `Execute(ctx, {cmd: "echo hello"})` возвращает `TaskResult{ExitCode: 0, Stdout: "hello\n"}` |
-| 2.4 | Реализовать `Scheduler.Assign` + `SelectWorker` в самом простом виде — единственный захардкоженный воркер | Задача в статусе `READY` подхватывается планировщиком и логируется как назначенная |
+| 2.3 | Реализовать `ShellExecutor` (§6.4) | Юнит-тест: `Execute(ctx, {cmd: "echo hello"})` возвращает `TaskResult{ExitCode: 0, Stdout: "hello\n"}` |
+| 2.4 | Реализовать `WorkerRegistry` (§6.1, пока без health-check) и `Scheduler.assignOnce` + `SelectWorker` (§5) в самом простом виде — единственный захардкоженный воркер | Задача в статусе `READY` подхватывается планировщиком и логируется как назначенная |
 | 2.5 | Связать control-plane и воркер по-настоящему: control-plane реально вызывает `Dispatch` по gRPC, воркер реально исполняет и шлёт `ReportResult` | Отправка workflow из 1.6 приводит к реальному запуску процесса на воркере и получению результата назад |
 | 2.6 | Прогнать полный DAG `build → test → deploy` из этапа 1 через реального воркера | Все 3 задачи выполняются по очереди (с учётом зависимостей), workflow переходит в `SUCCEEDED` |
 
@@ -47,7 +47,7 @@
 |---|---|---|
 | 3.1 | Реализовать `WorkerRegistry.Register` (§6.1) | Два запущенных процесса воркера регистрируются → в реестре 2 записи с разными `WorkerID` |
 | 3.2 | Реализовать периодический `Heartbeat` с обеих сторон | В логах control-plane видно регулярные heartbeat от обоих воркеров, `LastHeartbeat` обновляется |
-| 3.3 | Реализовать health-check цикл: `ALIVE → SUSPECT → DEAD` по таймаутам (§6.2) | Убить один воркер (`kill -9`) → через grace period control-plane помечает его `DEAD` в логах |
+| 3.3 | Реализовать health-check через `pkg/retryqueue` (dead man's switch): `ALIVE → DEAD` по таймауту heartbeat (§6.3) | Убить один воркер (`kill -9`) → через grace period control-plane помечает его `DEAD` в логах |
 | 3.4 | Реализовать переназначение задач с упавшего воркера | Убить воркер во время выполнения `RUNNING`-задачи → задача возвращается в `READY`, переназначается второму воркеру, завершается там |
 | 3.5 | Улучшить `SelectWorker` до least-loaded (по `RunningTasks/Capacity`) | Workflow с 6 параллельными задачами при 2 воркерах распределяется примерно поровну (3/3), а не всё на первый |
 

@@ -7,18 +7,21 @@ import (
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
 )
 
 type WorkflowEngine struct {
 	workflows map[string]*domain.Workflow
+	scheduler *scheduler.Scheduler
 	log       *logger.Logger
 
 	mu sync.RWMutex
 }
 
-func NewWorkflowEngine(log *logger.Logger) *WorkflowEngine {
+func NewWorkflowEngine(log *logger.Logger, scheduler *scheduler.Scheduler) *WorkflowEngine {
 	return &WorkflowEngine{
 		workflows: make(map[string]*domain.Workflow),
+		scheduler: scheduler,
 		log:       log,
 	}
 }
@@ -121,6 +124,8 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow
 		if e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady) {
 			e.log.Info("task ready", logger.String("task", readyTask.ID))
 		}
+
+		e.scheduler.PushTask(readyTask)
 	}
 }
 

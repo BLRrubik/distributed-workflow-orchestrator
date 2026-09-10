@@ -8,6 +8,8 @@ import (
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
 )
 
 func buildTestDeployTasks() []domain.Task {
@@ -18,9 +20,18 @@ func buildTestDeployTasks() []domain.Task {
 	}
 }
 
-func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {
+func newTestEngine(t *testing.T) *WorkflowEngine {
+	t.Helper()
+
 	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	registry := orchestration.NewWorkerRegistry(log)
+	sched := scheduler.New(registry, log)
+
+	return NewWorkflowEngine(log, sched)
+}
+
+func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
@@ -36,8 +47,7 @@ func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {
 }
 
 func TestOnTaskCompleted_PropagatesReadyToDependents(t *testing.T) {
-	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
@@ -66,8 +76,7 @@ func TestOnTaskCompleted_PropagatesReadyToDependents(t *testing.T) {
 }
 
 func TestSubmitWorkflow_MarksWorkflowRunning(t *testing.T) {
-	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
@@ -80,8 +89,7 @@ func TestSubmitWorkflow_MarksWorkflowRunning(t *testing.T) {
 }
 
 func TestOnTaskCompleted_FinalizesWorkflowAsSucceeded(t *testing.T) {
-	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())
@@ -101,8 +109,7 @@ func TestOnTaskCompleted_FinalizesWorkflowAsSucceeded(t *testing.T) {
 }
 
 func TestOnTaskCompleted_WorkflowNotFound(t *testing.T) {
-	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	err := e.OnTaskCompleted(ctx, "missing-wf", "build", domain.TaskResult{})
@@ -110,8 +117,7 @@ func TestOnTaskCompleted_WorkflowNotFound(t *testing.T) {
 }
 
 func TestOnTaskCompleted_TaskNotFound(t *testing.T) {
-	log := logger.New(logger.INFO, true)
-	e := NewWorkflowEngine(log)
+	e := newTestEngine(t)
 	ctx := context.Background()
 
 	wf, err := domain.NewWorkflow("tenant1", "wf1", buildTestDeployTasks())

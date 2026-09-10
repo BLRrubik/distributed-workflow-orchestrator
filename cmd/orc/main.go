@@ -6,6 +6,8 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/engine"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
 )
 
 func main() {
@@ -24,7 +26,15 @@ func main() {
 		panic(err)
 	}
 
-	eng := engine.NewWorkflowEngine(log)
+	workerRegistry := orchestration.NewWorkerRegistry(log)
+	workerRegistry.Register(domain.WorkerNode{
+		ID: "example-worker",
+	})
+
+	taskScheduler := scheduler.New(workerRegistry, log)
+	go taskScheduler.Run(ctx)
+
+	eng := engine.NewWorkflowEngine(log, taskScheduler)
 
 	workflowID, err := eng.SubmitWorkflow(ctx, wf)
 	if err != nil {
