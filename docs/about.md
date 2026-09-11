@@ -76,15 +76,10 @@ package domain
 
 import "time"
 
-// TenantID — идентификатор арендатора (для multi-tenancy)
-type TenantID string
-
-// JobID / WorkflowID / TaskID — уникальные идентификаторы (используйте ULID или UUIDv7,
-// чтобы они были сортируемы по времени — это удобно для логов и хранилища)
-type WorkflowID string
-type TaskID string
-type ExecutionID string
-type WorkerID string
+// ID всех сущностей — обычный string (рекомендуется генерировать через ULID/UUIDv7,
+// чтобы значения были сортируемы по времени — удобно для логов и хранилища).
+// Отдельные типы под TenantID/WorkflowID/TaskID/WorkerID не заводим — это лишняя
+// абстракция при таком размере системы; при необходимости всегда можно добавить позже.
 
 // TaskStatus — конечный автомат состояния задачи
 type TaskStatus string
@@ -102,16 +97,16 @@ const (
 
 // Task — узел графа выполнения (DAG node)
 type Task struct {
-	ID           TaskID
-	WorkflowID   WorkflowID
+	ID           string
+	WorkflowID   string
 	Name         string
-	DependsOn    []TaskID          // рёбра графа: этот таск ждёт завершения перечисленных
+	DependsOn    []string          // рёбра графа: ID задач, завершения которых этот таск ждёт
 	Command      TaskSpec          // что именно выполнять
 	MaxRetries   int
 	RetryBackoff time.Duration
 	Timeout      time.Duration
 	Status       TaskStatus
-	AssignedTo   WorkerID
+	AssignedTo   string            // WorkerID
 	Attempt      int
 	Result       *TaskResult
 	CreatedAt    time.Time
@@ -145,10 +140,10 @@ const (
 
 // Workflow — DAG задач
 type Workflow struct {
-	ID        WorkflowID
-	TenantID  TenantID
+	ID        string
+	TenantID  string
 	Name      string
-	Tasks     map[TaskID]*Task
+	Tasks     map[string]*Task // ключ — Task.ID
 	Status    WorkflowStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -156,7 +151,7 @@ type Workflow struct {
 
 // WorkerNode — регистрация воркера в кластере
 type WorkerNode struct {
-	ID            WorkerID
+	ID            string
 	Address       string // host:port для gRPC
 	Labels        map[string]string // например {"gpu":"true","region":"eu"} — для селекторов
 	Capacity      int    // сколько задач параллельно может исполнять
@@ -175,10 +170,10 @@ const (
 
 // Tenant — для multi-tenancy (см. §10)
 type Tenant struct {
-	ID        TenantID
-	Name      string
+	ID         string
+	Name       string
 	APIKeyHash string
-	Quota     ResourceQuota
+	Quota      ResourceQuota
 }
 
 type ResourceQuota struct {
@@ -337,8 +332,8 @@ type Command struct {
 
 // OrchestratorFSM реализует raft.FSM поверх доменной модели из common/domain
 type OrchestratorFSM struct {
-	workflows map[domain.WorkflowID]*domain.Workflow
-	workers   map[domain.WorkerID]*domain.WorkerNode
+	workflows map[string]*domain.Workflow // ключ — Workflow.ID
+	workers   map[string]*domain.WorkerNode // ключ — WorkerNode.ID
 }
 
 func (f *OrchestratorFSM) Apply(entry raft.LogEntry) (interface{}, error) {
@@ -378,14 +373,14 @@ type WorkflowEngine struct {
 }
 
 // SubmitWorkflow вызывается из API. Валидирует DAG, затем проводит через Raft.
-func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow) (domain.WorkflowID, error)
+func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow) (string, error)
 
 // OnTaskCompleted вызывается, когда Scheduler получил результат от воркера.
 // Пересчитывает READY-множество для зависимых задач.
-func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, workflowID domain.WorkflowID, taskID domain.TaskID, result domain.TaskResult) error
+func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error
 
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач
-func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []domain.TaskID
+func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string // ID готовых к запуску задач
 ```
 
 **Валидация DAG при создании** (обязательно, до попадания в Raft-лог, чтобы не тратить консенсус на заведомо невалидные данные):
@@ -399,21 +394,21 @@ func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []domain.TaskI
 
 Раскладывает `READY`-задачи по воркерам.
 
+### 5.1 Подбор воркера
+
 ```go
 // infrastructure/control-plane/scheduler/scheduler.go
 package scheduler
 
 type Scheduler struct {
-	workerRegistry *WorkerRegistry
-	queue          *ReadyQueue // задачи в статусе READY, ждущие назначения
+	workerRegistry *orchestration.WorkerRegistry // §6.1
+	workerClient   orchestration.WorkerClient     // §6.1 — gRPC-клиент к WorkerRPC.Dispatch
+	queue          *ReadyQueue                    // задачи в статусе READY, ждущие назначения
+	retryQueue     *retryqueue.RetryQueue         // pkg/retryqueue, см. §5.2
 }
 
-// Assign — вызывается по таймеру/событию. Забирает задачи из очереди READY
-// и подбирает воркер под каждую.
-func (s *Scheduler) Assign(ctx context.Context) error
-
 // SelectWorker — алгоритм подбора. Начните с простого, усложняйте по мере роста требований.
-func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) (domain.WorkerID, error)
+func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) (string, error) // возвращает WorkerNode.ID
 ```
 
 **Алгоритмы `SelectWorker`, от простого к сложному** (реализуйте по очереди, это хороший инкрементальный план):
@@ -429,19 +424,236 @@ func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) 
 
 Это гарантирует: если лидер упадёт сразу после решения, но до отправки — новый лидер увидит из лога, что задача уже назначена, и либо повторно отправит, либо (с timeout) сочтёт назначение протухшим и переназначит.
 
+### 5.2 Как это крутится в цикле
+
+Планировщик работает **только на лидере** — follower'ы ничего не назначают, иначе два узла могли бы независимо принять разные решения по одной и той же задаче.
+
+```go
+func (s *Scheduler) Run(ctx context.Context) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C: // страховочный тик — на случай, если событие потерялось
+			if !s.raftNode.IsLeader() {
+				continue
+			}
+			s.assignOnce(ctx)
+		}
+	}
+}
+```
+
+Помимо тикера, `assignOnce` стоит вызывать сразу по событиям — новая задача стала `READY` (§4, `OnTaskCompleted`), новый воркер зарегистрировался (§6.1), воркер помечен `DEAD` и его задачи вернулись в очередь (§6.3) — тикер тут просто страховка, а не основной механизм.
+
+```go
+func (s *Scheduler) assignOnce(ctx context.Context) {
+	readyTasks := s.queue.PopBatch(50) // не раздаём всю очередь за один присест
+	workers := s.workerRegistry.AliveWorkers()
+
+	for _, task := range readyTasks {
+		workerID, err := s.SelectWorker(task, workers)
+		if err != nil {
+			s.queue.Push(task) // нет подходящего воркера прямо сейчас — вернуть, попробуем на след. тике
+			continue
+		}
+		if err := s.commitAssignment(ctx, task, workerID); err != nil {
+			s.queue.Push(task) // не прошло через Raft (например, потеряли лидерство) — вернуть
+			continue
+		}
+		s.workerRegistry.IncrementRunning(workerID) // учитываем занятость СРАЗУ, не дожидаясь heartbeat —
+		                                              // иначе следующая задача в этом же батче может уйти туда же
+	}
+}
+```
+
+**Retry самой задачи** (`Task.MaxRetries`/`RetryBackoff`) удобно завести через `pkg/retryqueue` — тот же паттерн "повторяй, пока не false, с таймаутом между попытками":
+
+```go
+func (s *Scheduler) commitAssignment(ctx context.Context, task domain.Task, workerID string) error {
+	// 1. провести CmdAssignTask через Raft — коммитим РЕШЕНИЕ, ещё до реального сетевого вызова
+	if err := s.raftAssignTask(ctx, task.ID, workerID); err != nil {
+		return err
+	}
+
+	// 2. только после коммита — реальный gRPC-вызов воркеру
+	req := util.TaskToDispatchRequest(task) // common/util, конвертер domain.Task -> workerpb.DispatchRequest
+	resp, err := s.workerClient.Dispatch(ctx, workerID, req)
+	if err != nil || !resp.Accepted {
+		return fmt.Errorf("dispatch to worker %s failed: %w", workerID, err)
+	}
+
+	// 3. завести наблюдение за задачей — жива ли она, не пора ли retry
+	s.retryQueue.Push(retryqueue.CommonRetryTrigger{
+		Key:     task.ID,
+		Timeout: task.RetryBackoff,
+		Do: func(ctx context.Context) bool {
+			status := s.engine.TaskStatus(task.ID)
+			if status == domain.TaskSucceeded {
+				return false // готово — больше не проверяем
+			}
+			if status == domain.TaskFailed && task.Attempt >= task.MaxRetries {
+				return false // попытки исчерпаны
+			}
+			if status == domain.TaskFailed {
+				s.queue.Push(task.ID) // вернуть в очередь на новую попытку
+			}
+			return true // продолжаем следить
+		},
+	})
+	return nil
+}
+```
+
+Когда задача реально завершается успешно — `OnTaskCompleted` (§4) должен вызвать `retryQueue.Cancel(taskID)`, чтобы не проверять её впустую.
+
 ---
 
 ## 6. Кластерная оркестрация: воркеры
 
-### 6.1 Регистрация и heartbeat
+### 6.1 WorkerRegistry
+
+Реестр живых воркеров — держит кластерное состояние и здоровье каждого воркера. Живёт на control-plane, доступен и `Scheduler`, и health-check циклу.
+
+**Важно про зависимости:** `WorkerRegistry` — низкоуровневый компонент (§14.2), он не должен импортировать `WorkerClient`/gRPC-детали, чтобы закрыть соединение при смерти воркера. Вместо прямого вызова — Observer-паттерн: `Registry` хранит список колбэков `func(workerID string)` и зовёт их всех, когда воркер умер, не зная, что конкретно эти колбэки делают.
+
+```go
+// infrastructure/control-plane/orchestration/registry.go
+package orchestration
+
+type WorkerRegistry struct {
+	mu          sync.RWMutex
+	workers     map[string]*domain.WorkerNode // ключ — WorkerNode.ID
+	retryQueue  *retryqueue.RetryQueue         // pkg/retryqueue — health-check по dead man's switch
+	onDeadHooks []func(workerID string)        // подписчики на "воркер умер"; Registry не знает, что внутри
+}
+
+func NewWorkerRegistry(retryQueue *retryqueue.RetryQueue) *WorkerRegistry {
+	return &WorkerRegistry{
+		workers:    make(map[string]*domain.WorkerNode),
+		retryQueue: retryQueue,
+	}
+}
+
+// OnWorkerDead — регистрация подписчика. Вызывается один раз при сборке зависимостей в main.go,
+// ДО того как в реестр начнут регистрироваться воркеры.
+func (r *WorkerRegistry) OnWorkerDead(hook func(workerID string)) {
+	r.onDeadHooks = append(r.onDeadHooks, hook)
+}
+
+// Register — обработчик ClusterService.Register (§6.2)
+func (r *WorkerRegistry) Register(w domain.WorkerNode) error
+
+// Heartbeat — обработчик ClusterService.Heartbeat (§6.2)
+func (r *WorkerRegistry) Heartbeat(workerID string, runningTasks int) error
+
+func (r *WorkerRegistry) AliveWorkers() []domain.WorkerNode
+func (r *WorkerRegistry) IncrementRunning(workerID string)
+func (r *WorkerRegistry) AddressOf(workerID string) string // нужен WorkerClient, см. ниже
+```
+
+**`WorkerClient`** — то, чем `Scheduler` реально стучится к воркеру по сети (§5.2, `commitAssignment`). Заведён отдельно от `WorkerRegistry`, чтобы `Scheduler` зависел только от узкого контракта "могу отправить задачу", а не от всего реестра с его health-check и мутациями. `WorkerClient`, в свою очередь, ничего не знает про `WorkerRegistry` как тип — только про узкий `addressResolver`:
+
+```go
+// infrastructure/control-plane/orchestration/worker_client.go
+package orchestration
+
+// WorkerClient — контракт, которого достаточно Scheduler'у. Реализуется GRPCWorkerClient ниже,
+// но в тестах Scheduler подставляет мок этого интерфейса, не поднимая реальную сеть.
+type WorkerClient interface {
+	Dispatch(ctx context.Context, workerID string, req *workerpb.DispatchRequest) (*workerpb.DispatchResponse, error)
+}
+
+// addressResolver — то немногое, что нужно от WorkerRegistry: только чтение адреса.
+// *WorkerRegistry уже удовлетворяет этому интерфейсу неявно — ничего дополнительно делать не нужно.
+type addressResolver interface {
+	AddressOf(workerID string) string
+}
+
+// GRPCWorkerClient — держит переиспользуемые gRPC-соединения к воркерам, по одному на воркера.
+type GRPCWorkerClient struct {
+	mu       sync.Mutex
+	conns    map[string]*grpc.ClientConn
+	resolver addressResolver
+}
+
+func NewGRPCWorkerClient(resolver addressResolver) *GRPCWorkerClient {
+	return &GRPCWorkerClient{
+		conns:    make(map[string]*grpc.ClientConn),
+		resolver: resolver,
+	}
+}
+
+func (c *GRPCWorkerClient) Dispatch(ctx context.Context, workerID string, req *workerpb.DispatchRequest) (*workerpb.DispatchResponse, error) {
+	conn, err := c.getOrDial(workerID)
+	if err != nil {
+		return nil, err
+	}
+	return workerpb.NewWorkerRPCClient(conn).Dispatch(ctx, req)
+}
+
+func (c *GRPCWorkerClient) getOrDial(workerID string) (*grpc.ClientConn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn, ok := c.conns[workerID]; ok {
+		return conn, nil
+	}
+	addr := c.resolver.AddressOf(workerID)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	c.conns[workerID] = conn
+	return conn, nil
+}
+
+// CloseConn — сигнатура подходит под func(workerID string), поэтому её можно напрямую
+// передать в registry.OnWorkerDead без обёрток
+func (c *GRPCWorkerClient) CloseConn(workerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn, ok := c.conns[workerID]; ok {
+		conn.Close()
+		delete(c.conns, workerID)
+	}
+}
+```
+
+Сборка в `cmd/control-plane/main.go` — единственное место во всей системе, где `WorkerRegistry` и `WorkerClient` вообще узнают друг о друге:
+
+```go
+registry := orchestration.NewWorkerRegistry(retryQueue)
+workerClient := orchestration.NewGRPCWorkerClient(registry) // *WorkerRegistry неявно реализует addressResolver
+registry.OnWorkerDead(workerClient.CloseConn)                // подписка: сигнатуры совпадают один в один
+
+sched := scheduler.New(registry, workerClient, readyQueue, retryQueue)
+```
+
+Если позже понадобится ещё один подписчик на "воркер умер" (например, метрика `worker_deaths_total` или пересчёт квот тенанта) — это ещё одна строчка `registry.OnWorkerDead(...)` в `main.go`, без единой правки в `WorkerRegistry` или `WorkerClient`.
+
+### 6.2 Протокол (регистрация, heartbeat, диспатч)
+
+Важно: gRPC-`service` всегда реализуется одной стороной (сервером) и вызывается другой (клиентом) — нельзя в одном service-блоке смешать RPC, которые вызывают в разные стороны. Поэтому здесь **два разных сервиса**, у каждого свой сервер:
+
+- **`ClusterService`** — сервер поднимает **control-plane**, вызывает **воркер** (регистрация, heartbeat, отчёт о результате).
+- **`WorkerRPC`** — сервер поднимает **воркер**, вызывает **control-plane** (диспатч задачи).
 
 ```protobuf
 // docs/proto/worker.proto — сгенерированный код -> common/api/workerpb
-service WorkerService {
+
+// Реализует control-plane. Вызывает воркер.
+service ClusterService {
   rpc Register(RegisterRequest) returns (RegisterResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  rpc Dispatch(DispatchRequest) returns (DispatchResponse);   // control-plane -> worker
-  rpc ReportResult(ResultRequest) returns (ResultResponse);   // worker -> control-plane
+  rpc ReportResult(ResultRequest) returns (ResultResponse);
+}
+
+// Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
+service WorkerRPC {
+  rpc Dispatch(DispatchRequest) returns (DispatchResponse);
 }
 
 message RegisterRequest {
@@ -450,10 +662,17 @@ message RegisterRequest {
   map<string, string> labels = 3;
   int32 capacity = 4;
 }
+message RegisterResponse {
+  bool accepted = 1;
+  string reason = 2; // заполнено, если accepted == false (например, дубликат worker_id)
+}
 
 message HeartbeatRequest {
   string worker_id = 1;
   int32 running_tasks = 2;
+}
+message HeartbeatResponse {
+  bool acknowledged = 1;
 }
 
 message DispatchRequest {
@@ -461,6 +680,10 @@ message DispatchRequest {
   string type = 2;              // "shell" | "http"
   map<string, string> payload = 3;
   int64 timeout_seconds = 4;
+}
+message DispatchResponse {
+  bool accepted = 1;   // воркер подтвердил приём задачи (Capacity позволяет запустить)
+  string reason = 2;   // заполнено, если accepted == false ("worker busy" и т.п.)
 }
 
 message ResultRequest {
@@ -470,17 +693,72 @@ message ResultRequest {
   string stderr = 4;
   string error = 5;
 }
+message ResultResponse {
+  bool acknowledged = 1;
+}
 ```
 
-### 6.2 Health checking (failure detection)
+**Как это выглядит целиком по шагам:**
+1. Воркер стартует → вызывает `ClusterService.Register` на control-plane → `WorkerRegistry.Register` (§6.1) добавляет запись → получает `RegisterResponse{accepted: true}`.
+2. Воркер каждые N секунд вызывает `ClusterService.Heartbeat` → `WorkerRegistry.Heartbeat` обновляет `LastHeartbeat` и сбрасывает health-check таймер (§6.3).
+3. Control-plane (лидер) решил, что задача X идёт воркеру Y → сам, как **клиент**, вызывает `WorkerRPC.Dispatch` по адресу воркера Y (тот самый `Address` из `RegisterRequest`) → получает `DispatchResponse{accepted: true}`.
+4. Когда задача реально завершилась — воркер вызывает `ClusterService.ReportResult` на control-plane с результатом.
 
-Воркер шлёт `Heartbeat` каждые `heartbeat_interval` (например 5с). Control-plane:
-- если пропущено `> N` интервалов подряд → `WorkerSuspect`;
-- если пропущено `> M` (M > N) → `WorkerDead`, все его `DISPATCHED/RUNNING` задачи переводятся обратно в `READY` и переназначаются другому воркеру (это идемпотентная операция — учитывайте, что старый воркер может "ожить" и всё же прислать результат: игнорируйте результат, если задача уже переназначена другому `AssignedTo`).
+### 6.3 Health checking (failure detection)
+
+Реализуйте через тот же `pkg/retryqueue`, что и retry задач (§5.2) — это тот же паттерн "dead man's switch": таймер, который срабатывает, если его вовремя не сбросили.
+
+```go
+// на каждый успешный Register: завести таймер
+func (r *WorkerRegistry) Register(w domain.WorkerNode) error {
+	r.workers[w.ID] = &w
+	r.retryQueue.Push(retryqueue.CommonRetryTrigger{
+		Key:     w.ID,
+		Timeout: heartbeatGracePeriod, // например 15с — несколько пропущенных heartbeat подряд
+		Do: func(ctx context.Context) bool {
+			worker := r.workers[w.ID]
+			if time.Since(worker.LastHeartbeat) > heartbeatGracePeriod {
+				r.markDead(w.ID)
+				return false // хватит проверять — воркер мёртв
+			}
+			return true // ещё жив, продолжаем следить
+		},
+	})
+	return nil
+}
+
+// на каждый Heartbeat: просто обновить LastHeartbeat — таймер сам перечитает его на следующем срабатывании
+func (r *WorkerRegistry) Heartbeat(workerID string, runningTasks int) error {
+	worker, ok := r.workers[workerID]
+	if !ok {
+		return fmt.Errorf("unknown worker %s, must Register first", workerID)
+	}
+	worker.LastHeartbeat = time.Now()
+	worker.RunningTasks = runningTasks
+	return nil
+}
+
+func (r *WorkerRegistry) markDead(workerID string) {
+	r.mu.Lock()
+	r.workers[workerID].Status = domain.WorkerDead
+	r.mu.Unlock()
+
+	// вернуть DISPATCHED/RUNNING задачи этого воркера в READY — команда через Raft, не прямая мутация
+	r.reassignTasksOf(workerID)
+
+	// уведомить подписчиков — Registry не знает, что именно они делают (закрыть gRPC-соединение,
+	// инкрементировать метрику и т.п.), это их дело
+	for _, hook := range r.onDeadHooks {
+		hook(workerID)
+	}
+}
+```
+
+Это идемпотентная операция — учитывайте, что старый воркер может "ожить" и всё же прислать результат: игнорируйте `ReportResult`, если задача уже переназначена другому `AssignedTo`.
 
 Это классическая проблема распределённых систем — **невозможно надёжно отличить "воркер упал" от "воркер медленный/сеть моргнула"**. Отсюда следует требование: задачи должны быть по возможности **идемпотентны**, либо система должна поддерживать at-least-once с дедупликацией по `ExecutionID`.
 
-### 6.3 Исполнение задачи на воркере
+### 6.4 Исполнение задачи на воркере
 
 ```go
 // infrastructure/worker/executor/executor.go
@@ -496,6 +774,8 @@ type ShellExecutor struct{}
 // HTTPExecutor — дергает payload["url"] методом payload["method"]
 type HTTPExecutor struct{ client *http.Client }
 ```
+
+Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
 
 Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
 
@@ -636,16 +916,16 @@ orc worker list
 ```yaml
 name: build-and-deploy
 tasks:
-  - id: build
-    command: {type: shell, cmd: "go build ./..."}
-  - id: test
-    depends_on: [build]
-    command: {type: shell, cmd: "go test ./..."}
-  - id: deploy
-    depends_on: [test]
-    command: {type: http, url: "https://deploy.internal/api", method: POST}
-    max_retries: 3
-    timeout: 60s
+   - id: build
+     command: {type: shell, cmd: "go build ./..."}
+   - id: test
+     depends_on: [build]
+     command: {type: shell, cmd: "go test ./..."}
+   - id: deploy
+     depends_on: [test]
+     command: {type: http, url: "https://deploy.internal/api", method: POST}
+     max_retries: 3
+     timeout: 60s
 ```
 
 ---
@@ -699,7 +979,7 @@ tasks:
 
 ```text
 distributed-orchestrator/
-├── go.mod                          # единый модуль (см. §14.3 про go.work, если нужно строже)
+├── go.mod                          # единый модуль на всю монорепу
 ├── cmd/
 │   ├── control-plane/main.go       # запуск узла control-plane
 │   ├── worker/main.go              # запуск воркера
@@ -725,9 +1005,9 @@ distributed-orchestrator/
 │   │   └── grpcserver/              # §10: реализация OrchestratorAPI (использует common/api)
 │   │
 │   └── worker/
-│       ├── executor/                 # ShellExecutor, HTTPExecutor (§6.3)
+│       ├── executor/                 # ShellExecutor, HTTPExecutor (§6.4)
 │       ├── clusterclient/            # регистрация в control-plane, отправка heartbeat
-│       └── grpcserver/               # реализация WorkerService.Dispatch (§6.1)
+│       └── grpcserver/               # реализация WorkerRPC.Dispatch (§6.2)
 │
 ├── pkg/
 │   ├── raft/                        # §3: универсальный consensus-движок — node/election/log/rpc/fsm-интерфейс.
@@ -735,6 +1015,7 @@ distributed-orchestrator/
 │   ├── boltstore/                   # generic-обёртка над bbolt: Put/Get/Iterate/Snapshot, WAL-паттерн
 │   ├── observability/               # инициализация slog-логгера, prometheus-registry, otel-tracer
 │   ├── grpcmw/                      # grpc-интерсепторы: auth, logging, tracing, panic-recovery
+│   ├── retryqueue/                  # §5.2/§6.3: generic "dead man's switch" — retry задач и health-check воркеров
 │   └── idgen/                       # обёртка над ULID/UUIDv7
 │
 ├── docs/
@@ -776,21 +1057,7 @@ infrastructure/worker         ──┘
 
 Если хотите, чтобы это правило проверялось автоматически, а не на честном слове — добавьте в CI `golangci-lint` с правилом `depguard`, запрещающим `pkg/*` импортировать `common/*` или `infrastructure/*`, и `infrastructure/control-plane/*` импортировать `infrastructure/worker/*` (и наоборот).
 
-### 14.3 Опционально: `pkg` как отдельные Go-модули
-
-Если цель `pkg` — не просто "папка с намерением переиспользовать", а буквально вытащить пакет `pkg/raft` в отдельный публичный репозиторий когда-нибудь — заведите `go.work` в корне и отдельный `go.mod` в каждой подпапке `pkg/*`:
-
-```text
-distributed-orchestrator/
-├── go.work
-├── go.mod                # модуль на common + infrastructure + cmd
-└── pkg/
-    ├── raft/go.mod        # отдельный модуль, свой номер версии
-    ├── boltstore/go.mod
-    └── observability/go.mod
-```
-
-Это усложняет разработку (нужно синхронизировать версии через `go.work`), поэтому на старте разумно ограничиться единым `go.mod` на весь репозиторий и соблюдать правило зависимостей из §14.2 дисциплиной/линтером, а к отдельным модулям переходить только когда реально понадобится опубликовать `pkg/raft` как самостоятельную библиотеку.
+`pkg/*` — это обычные Go-пакеты внутри единого `go.mod` монорепы, без собственных `go.mod`. Разделение на `pkg` — чисто про архитектурную дисциплину (эти пакеты можно скопировать в другой проект без правок), а не про то, что они физически отдельные модули. Заводить отдельный `go.mod`/`go.work` под них имеет смысл только в момент, когда вы реально решите опубликовать, например, `pkg/raft` как самостоятельную библиотеку в отдельном репозитории — а не заранее "на всякий случай".
 
 ---
 
@@ -801,7 +1068,7 @@ distributed-orchestrator/
 | Этап | Содержание | Definition of Done |
 |---|---|---|
 | **1. Workflow Engine (соло, без кластера)** | `domain`, DAG-валидация, `WorkflowEngine` поверх in-memory FSM (без Raft пока) | Можно из кода создать Workflow с 3 задачами и зависимостями, увидеть корректный порядок READY-переходов в логах |
-| **2. Job Scheduler + один воркер** | `Scheduler`, gRPC `WorkerService`, `ShellExecutor` | Workflow из этапа 1 реально исполняется на локальном воркере, статусы обновляются по результатам |
+| **2. Job Scheduler + один воркер** | `Scheduler`, gRPC `ClusterService`/`WorkerRPC`, `ShellExecutor` | Workflow из этапа 1 реально исполняется на локальном воркере, статусы обновляются по результатам |
 | **3. Несколько воркеров + Orchestration** | Регистрация, heartbeat, health check, переназначение при падении воркера | Убить воркер во время исполнения → задача переназначается другому и завершается |
 | **4. Raft: leader election** | `RequestVote`, election timeout, состояние Follower/Candidate/Leader | 3-узловой кластер стабильно выбирает лидера, при `kill -9` лидера новый выбирается за секунды |
 | **5. Raft: log replication + FSM интеграция** | `AppendEntries`, `Apply`, все команды из §3.5 идут через Raft | Все команды из этапов 1-3 теперь проходят через Raft-лог, а не напрямую |

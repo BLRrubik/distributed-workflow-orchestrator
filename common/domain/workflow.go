@@ -5,9 +5,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
 // Workflow — DAG задач.
@@ -43,7 +40,7 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		return nil, fmt.Errorf("tasks cycle failed: %s", err.Error())
 	}
 
-	return &Workflow{
+	wf := &Workflow{
 		ID:        uuid.NewString(),
 		TenantID:  tenantID,
 		Name:      name,
@@ -51,29 +48,29 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		status:    WorkflowPending,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-	}, nil
+	}
+
+	for i := range wf.Tasks {
+		wf.Tasks[i].WorkflowID = wf.ID
+		wf.Tasks[i].CreatedAt = time.Now()
+		wf.Tasks[i].UpdatedAt = time.Now()
+	}
+
+	return wf, nil
 }
 
 func (w *Workflow) GetStatus() WorkflowStatus {
 	return w.status
 }
 
-func (w *Workflow) UpdateStatus(ctx appcontext.AppContext, status WorkflowStatus) bool {
+func (w *Workflow) UpdateStatus(status WorkflowStatus) error {
 	if err := w.status.CanTransitTo(status); err != nil {
-		ctx.GetLogger().Error(
-			"update workflow status failed",
-			logger.String("workflow_id", w.ID),
-			logger.String("from", w.status.String()),
-			logger.String("to", status.String()),
-			logger.Error(err),
-		)
-
-		return false
+		return err
 	}
 
 	w.status = status
 
-	return true
+	return nil
 }
 
 // IsFinished — завершён ли workflow целиком (терминальный статус).

@@ -1,0 +1,54 @@
+// docs/proto/worker.proto — сгенерированный код -> common/api/protogen
+syntax = "proto3";
+
+package entities;
+
+option go_package = "common/api/protogen";
+
+service ClusterService {
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ReportResult(ResultRequest) returns (ResultResponse);
+}
+
+message RegisterRequest {
+  string worker_id = 1;
+  string address = 2;
+  map<string, string> labels = 3;
+  int32 capacity = 4;
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string reason = 2; // заполнено, если accepted == false (например, дубликат worker_id)
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  int32 running_tasks = 2;
+}
+
+message HeartbeatResponse {
+  bool acknowledged = 1;
+}
+
+enum TaskReportStatus {
+  TASK_REPORT_RUNNING = 0;
+  TASK_REPORT_SUCCEEDED = 1;
+  TASK_REPORT_FAILED = 2;
+}
+
+message ResultRequest {
+  string workflow_id = 1;
+  string task_id = 2;
+  TaskReportStatus status = 3;
+  int32 exit_code = 4;   // валиден только при status == SUCCEEDED/FAILED
+  string stdout = 5;
+  string stderr = 6;
+  string error = 7;
+  int64  duration = 8;
+}
+
+message ResultResponse {
+  bool acknowledged = 1;
+}

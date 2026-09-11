@@ -38,17 +38,15 @@ linters:
     - varnamelen # длина имён переменных
     - noinlineerr # inline обработка ошибок
     - testifylint # исправления тестов с assert.*
+    - forbidigo
 
   exclusions:
     paths:
-      - ansible
-      - charts
       - deploy
-      - generator
       - docs
       - vendor
       - tools
-      - mocks
+      - proto
   settings:
     depguard:
       rules:
@@ -60,6 +58,7 @@ linters:
             - google.golang.org
             - gopkg.in
             - go.uber.org
+            - go.yaml.in
           deny:
             - pkg: "emperror.dev/errors"
               desc: should be replaced by "github.com/pkg/errors"
@@ -90,6 +89,7 @@ linters:
         - G306 # expect WriteFile permissions to be 0600 or less (gosec)
         - G304 # potential file inclusion via variable
         - G602 # slice index out of range
+        - G204
     staticcheck: # Go 1.25 upgrade
       checks:
         - "all"

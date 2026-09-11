@@ -3,8 +3,7 @@ package domain
 import (
 	"time"
 
-	appcontext "github.com/blrrubik/distributed-workflow-orchestrator/common/context"
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 )
 
 // Task — узел графа выполнения (DAG node).
@@ -13,7 +12,7 @@ type Task struct {
 	WorkflowID   string
 	Name         string
 	DependsOn    []string // рёбра графа: этот таск ждёт завершения перечисленных
-	Command      TaskSpec // что именно выполнять
+	Spec         TaskSpec // что именно выполнять
 	MaxRetries   int
 	RetryBackoff time.Duration
 	Timeout      time.Duration
@@ -23,6 +22,10 @@ type Task struct {
 	result       *TaskResult
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+func (t *Task) IsReady() bool {
+	return t.status == TaskPending || t.status == TaskRetrying
 }
 
 func (t *Task) IsFinished() bool {
@@ -36,7 +39,7 @@ func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 			continue
 		}
 
-		if !task.IsFinished() {
+		if task.GetStatus() != TaskSucceeded {
 			return false
 		}
 	}
@@ -44,22 +47,14 @@ func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 	return true
 }
 
-func (t *Task) UpdateStatus(ctx appcontext.AppContext, status TaskStatus) bool {
+func (t *Task) UpdateStatus(status TaskStatus) error {
 	if err := t.status.CanTransitTo(status); err != nil {
-		ctx.GetLogger().Error(
-			"update status failed",
-			logger.String("task_id", t.ID),
-			logger.String("from", string(t.status)),
-			logger.String("to", string(status)),
-			logger.Error(err),
-		)
-
-		return false
+		return err
 	}
 
 	t.status = status
 
-	return true
+	return nil
 }
 
 func (t *Task) GetStatus() TaskStatus {
@@ -85,9 +80,23 @@ type TaskSpec struct {
 }
 
 type TaskResult struct {
+	Status   TaskStatus
 	ExitCode int
 	Stdout   string
 	Stderr   string
 	Error    string
 	Duration time.Duration
+}
+
+func FromProtoTaskStatus(status protogen.TaskReportStatus) TaskStatus {
+	switch status {
+	case protogen.TaskReportStatus_TASK_REPORT_RUNNING:
+		return TaskRunning
+	case protogen.TaskReportStatus_TASK_REPORT_FAILED:
+		return TaskFailed
+	case protogen.TaskReportStatus_TASK_REPORT_SUCCEEDED:
+		return TaskSucceeded
+	default:
+		return 0
+	}
 }
