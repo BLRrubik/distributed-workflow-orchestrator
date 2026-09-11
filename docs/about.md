@@ -19,44 +19,62 @@
 
 Цель ТЗ — дать вам структуру, интерфейсы, протоколы и последовательность шагов, чтобы вы реализовали это самостоятельно, понимая **зачем** нужен каждый компонент.
 
+### 0.1 Из каких сервисов (бинарников) состоит система
+
+Это стоит зафиксировать сразу, чтобы не путать роли дальше по документу — их **четыре**, все независимо запускаемые и деплоящиеся:
+
+| Бинарник | Что это | Участвует в Raft-консенсусе? | Где описан |
+|---|---|---|---|
+| `cmd/control-plane` | реальный узел кластера — хранит `NodeState`, может быть Leader/Follower/Candidate | **да** | §3–§9 |
+| `cmd/worker` | исполнитель задач | нет — снаружи кластера консенсуса | §6 |
+| `cmd/orc` | CLI — тонкий клиент, вызывает control-plane по gRPC | нет — просто клиент, как `etcdctl`/`nomad` CLI | §10.3 |
+| `cmd/apigateway` | HTTP/SSE-шлюз для браузера | нет — тоже клиент control-plane, просто для другой аудитории | §10.4 |
+
+Важно не путать `orc` с `control-plane`: `orc` не "поднимает узел" и не бывает лидером — он снаружи Raft-кластера, как обычный клиент базы данных снаружи её реплик. Лидера выбирают между собой только `control-plane` узлы (§3.4); `orc`/`apigateway` только **обнаруживают**, кто сейчас лидер, через `LeaderAwareClient` (§10.2).
+
 ---
 
 ## 1. Высокоуровневая архитектура
 
 ```mermaid
 flowchart TD
-   CLI[CLI / SDK]
+    Browser[Browser / Frontend]
+    Gateway[apigateway]
+    CLI[CLI: orc]
 
-   subgraph ControlPlane["Control Plane: Raft cluster, 3 узла"]
-      direction LR
-      N1[Node 1 Leader]
-      N2[Node 2 Follower]
-      N3[Node 3 Follower]
-      N1 <-->|Raft RPC| N2
-      N1 <-->|Raft RPC| N3
-      N2 <-->|Raft RPC| N3
-   end
+    subgraph ControlPlane["Control Plane: Raft cluster, 3 узла"]
+        direction LR
+        N1[Node 1 Leader]
+        N2[Node 2 Follower]
+        N3[Node 3 Follower]
+        N1 <-->|Raft RPC| N2
+        N1 <-->|Raft RPC| N3
+        N2 <-->|Raft RPC| N3
+    end
 
-   subgraph DataPlane["Data Plane"]
-      direction LR
-      W1[Worker 1]
-      W2[Worker 2]
-      W3[Worker N]
-   end
+    subgraph DataPlane["Data Plane"]
+        direction LR
+        W1[Worker 1]
+        W2[Worker 2]
+        W3[Worker N]
+    end
 
-   Obs[Observability: Prometheus / Loki / Jaeger]
+    Obs[Observability: Prometheus / Loki / Jaeger]
 
-   CLI -->|gRPC API| N1
-   N1 -->|dispatch задач| DataPlane
-   DataPlane -->|heartbeat и результаты| N1
-   ControlPlane -.->|метрики и логи| Obs
-   DataPlane -.->|метрики и логи| Obs
+    Browser -->|HTTP/JSON, SSE| Gateway
+    Gateway -->|gRPC, LeaderAwareClient| N1
+    CLI -->|gRPC, LeaderAwareClient| N1
+    N1 -->|dispatch задач| DataPlane
+    DataPlane -->|heartbeat и результаты| N1
+    ControlPlane -.->|метрики и логи| Obs
+    DataPlane -.->|метрики и логи| Obs
 ```
 
 **Принцип разделения ответственности:**
 
 | Слой | Отвечает за | Не отвечает за |
 |---|---|---|
+| API Gateway | HTTP/JSON и SSE для фронтенда, rate limiting, трансляция в gRPC | принятие решений, бизнес-логику, финальную авторизацию (§10.4) |
 | Control Plane (Raft-кластер) | принятие решений: кому какую задачу дать, кто лидер, консистентное состояние | реальное исполнение задач |
 | Data Plane (воркеры) | исполнение задач (shell-команда / HTTP-запрос / функция) | принятие решений о расписании |
 | Persistence | WAL + snapshot состояния кластера | бизнес-логику |
@@ -890,18 +908,72 @@ func TenantAuthMiddleware(tenants TenantStore) grpc.UnaryServerInterceptor {
 
 ### 10.1 gRPC (control-plane ↔ клиент/воркеры)
 
-Источник — `docs/proto/orchestrator.proto`; сгенерированный код (`protoc`/`buf`) кладите в `common/api/orchestratorpb`, чтобы им могли пользоваться и control-plane (реализация сервиса), и CLI (клиент), и, при необходимости, воркер.
+Источник — `docs/proto/orchestrator.proto`; сгенерированный код (`protoc`/`buf`) кладите в `common/api/orchestratorpb`, чтобы им могли пользоваться и control-plane (реализация сервиса), и CLI, и `apigateway`.
 
 ```protobuf
 service OrchestratorAPI {
   rpc SubmitWorkflow(SubmitWorkflowRequest) returns (SubmitWorkflowResponse);
   rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowStatusResponse);
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
-  rpc StreamWorkflowEvents(GetWorkflowRequest) returns (stream WorkflowEvent); // для CLI: live-статус
+  rpc StreamWorkflowEvents(GetWorkflowRequest) returns (stream WorkflowEvent); // для CLI/Gateway: live-статус
 }
 ```
 
-### 10.2 CLI (тонкий клиент поверх gRPC)
+### 10.2 `LeaderAwareClient` — общий клиент для CLI и Gateway
+
+Пишущие запросы (`SubmitWorkflow`, `CancelWorkflow`) обязаны идти **только на лидера** (§3.6/§5.2) — follower вернёт ошибку "not leader". Ни CLI, ни фронтенд не должны сами разбираться, кто сейчас лидер — эта логика реализована один раз и переиспользуется обоими потребителями.
+
+```go
+// common/client/leader_aware_client.go
+package client
+
+type LeaderAwareClient struct {
+	mu         sync.RWMutex
+	peers      []string // все известные адреса control-plane узлов
+	leaderAddr string   // закешированный текущий лидер
+}
+
+func (c *LeaderAwareClient) SubmitWorkflow(ctx context.Context, req *orchestratorpb.SubmitWorkflowRequest) (*orchestratorpb.SubmitWorkflowResponse, error) {
+	resp, err := c.callOnLeader(ctx, func(cl orchestratorpb.OrchestratorAPIClient) (interface{}, error) {
+		return cl.SubmitWorkflow(ctx, req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.(*orchestratorpb.SubmitWorkflowResponse), nil
+}
+
+func (c *LeaderAwareClient) callOnLeader(ctx context.Context, fn func(orchestratorpb.OrchestratorAPIClient) (interface{}, error)) (interface{}, error) {
+	for attempt := 0; attempt < len(c.peers)+1; attempt++ {
+		cl := orchestratorpb.NewOrchestratorAPIClient(c.currentConn())
+		resp, err := fn(cl)
+		if err == nil {
+			return resp, nil
+		}
+		if leaderAddr, ok := extractLeaderHint(err); ok {
+			c.setLeader(leaderAddr) // переретраить уже на реальном лидере
+			continue
+		}
+		return nil, err // не "not leader" — реальная ошибка, дальше ретраить бессмысленно
+	}
+	return nil, fmt.Errorf("no leader found after %d attempts", len(c.peers))
+}
+```
+
+Follower отдаёт подсказку про текущего лидера прямо в деталях gRPC-ошибки (дополнение к обработчикам §5.2/§10.1):
+
+```go
+// на follower'е, при попытке записи не на лидере
+func notLeaderError(leaderAddr string) error {
+	st := status.New(codes.FailedPrecondition, "not leader")
+	st, _ = st.WithDetails(&orchestratorpb.LeaderHint{LeaderAddress: leaderAddr})
+	return st.Err()
+}
+```
+
+### 10.3 CLI (`orc`)
+
+Тонкий клиент поверх `common/client.LeaderAwareClient` — говорит напрямую по gRPC с control-plane, без промежуточного HTTP-слоя (как `etcdctl`/`nomad`/`consul` CLI, а не через REST-gateway):
 
 ```text
 orc submit workflow.yaml
@@ -911,21 +983,45 @@ orc cluster status                # кто лидер, кто follower, кто d
 orc worker list
 ```
 
-### 10.3 Формат описания workflow (YAML, парсится в domain.Workflow)
+### 10.4 API Gateway (`infrastructure/apigateway`)
+
+Отдельный сервис-процесс между фронтендом и control-plane — аналог `kube-apiserver` перед `etcd`. Нужен по трём причинам:
+
+1. **Протокол.** Браузер не говорит "сырой" protobuf/gRPC напрямую — Gateway транслирует HTTP/JSON (`grpc-gateway` поверх `docs/proto/orchestrator.proto`) в вызовы `OrchestratorAPI`.
+2. **Стриминг.** `StreamWorkflowEvents` — это gRPC server-streaming, недоступный браузеру напрямую без `grpc-web`-прослойки — Gateway транслирует его в SSE/WebSocket.
+3. **Изоляция кластера от шума.** Rate limiting и прочая edge-логика вынесены за пределы control-plane узлов, чтобы не грузить сам Raft-кластер трафиком с фронтенда.
+
+```
+infrastructure/apigateway/
+├── resthandlers/     # grpc-gateway: REST/JSON <-> OrchestratorAPI (common/api), использует common/client.LeaderAwareClient
+├── sse/              # SSE/WebSocket поверх StreamWorkflowEvents
+└── ratelimit/        # rate limiting входящих запросов от фронтенда
+```
+
+**Важно про безопасность — Gateway не заменяет проверку тенанта.** Реальная проверка API-ключа и `TenantID` остаётся в `TenantAuthMiddleware` на control-plane (§9.2), а не только на Gateway: `Tenant`/`APIKeyHash` реплицируются через Raft (§9.1) как часть консистентного состояния кластера, и если Gateway станет единственной точкой проверки — прямой доступ к gRPC control-plane в обход Gateway (по ошибке конфигурации сети или иначе) полностью обнулит авторизацию. Gateway отвечает за UX/производительность (понятные HTTP-ошибки, rate limit, меньше нагрузки на кластер шумом), а не за замену слоя безопасности.
+
+Итоговая схема потоков:
+
+```text
+Browser (frontend) ──HTTP/JSON──> apigateway ──gRPC (LeaderAwareClient)──> Control Plane (Raft)
+CLI (orc)          ──────────────gRPC (LeaderAwareClient)───────────────>  Control Plane (Raft)
+```
+
+### 10.5 Формат описания workflow (YAML, парсится в domain.Workflow)
 
 ```yaml
 name: build-and-deploy
 tasks:
-   - id: build
-     command: {type: shell, cmd: "go build ./..."}
-   - id: test
-     depends_on: [build]
-     command: {type: shell, cmd: "go test ./..."}
-   - id: deploy
-     depends_on: [test]
-     command: {type: http, url: "https://deploy.internal/api", method: POST}
-     max_retries: 3
-     timeout: 60s
+  - id: build
+    command: {type: shell, cmd: "go build ./..."}
+  - id: test
+    depends_on: [build]
+    command: {type: shell, cmd: "go test ./..."}
+  - id: deploy
+    depends_on: [test]
+    command: {type: http, url: "https://deploy.internal/api", method: POST}
+    max_retries: 3
+    timeout: 60s
 ```
 
 ---
@@ -983,13 +1079,15 @@ distributed-orchestrator/
 ├── cmd/
 │   ├── control-plane/main.go       # запуск узла control-plane
 │   ├── worker/main.go              # запуск воркера
-│   └── orc/main.go                 # CLI-клиент
+│   ├── orc/main.go                 # CLI-клиент
+│   └── apigateway/main.go          # запуск API Gateway (§10.4)
 │
 ├── common/
 │   ├── domain/                     # §2: Task, Workflow, WorkerNode, Tenant, статусы, доменные ошибки
 │   ├── api/                        # сгенерированный из proto код (protogen), общий контракт control-plane <-> worker <-> client
 │   │   ├── orchestratorpb/         # *.pb.go, *_grpc.pb.go из docs/proto/orchestrator.proto
 │   │   └── workerpb/                # то же для docs/proto/worker.proto
+│   ├── client/                      # §10.2: LeaderAwareClient — общий gRPC-клиент для CLI и apigateway
 │   └── util/                        # ID-генерация (ULID/UUIDv7), DAG-валидация (поиск циклов),
 │                                     # конвертеры domain <-> protobuf, общие retry/backoff-хелперы
 │
@@ -1002,12 +1100,17 @@ distributed-orchestrator/
 │   │   ├── orchestration/           # §6: реестр воркеров, heartbeat, health-check
 │   │   ├── storage/                 # §7: схема хранения workflow/task поверх pkg/boltstore
 │   │   ├── tenancy/                 # §9: тенанты, квоты, API-ключи
-│   │   └── grpcserver/              # §10: реализация OrchestratorAPI (использует common/api)
+│   │   └── grpcserver/              # §10.1: реализация OrchestratorAPI (использует common/api)
 │   │
-│   └── worker/
-│       ├── executor/                 # ShellExecutor, HTTPExecutor (§6.4)
-│       ├── clusterclient/            # регистрация в control-plane, отправка heartbeat
-│       └── grpcserver/               # реализация WorkerRPC.Dispatch (§6.2)
+│   ├── worker/
+│   │   ├── executor/                 # ShellExecutor, HTTPExecutor (§6.4)
+│   │   ├── clusterclient/            # регистрация в control-plane, отправка heartbeat
+│   │   └── grpcserver/               # реализация WorkerRPC.Dispatch (§6.2)
+│   │
+│   └── apigateway/                   # §10.4: отдельный сервис между фронтендом и control-plane
+│       ├── resthandlers/             # grpc-gateway: REST/JSON <-> OrchestratorAPI
+│       ├── sse/                      # SSE/WebSocket поверх StreamWorkflowEvents
+│       └── ratelimit/                # rate limiting входящих запросов
 │
 ├── pkg/
 │   ├── raft/                        # §3: универсальный consensus-движок — node/election/log/rpc/fsm-интерфейс.
@@ -1047,15 +1150,15 @@ distributed-orchestrator/
 
 ```text
 infrastructure/control-plane  ──┐
-                                 ├──>  common  ──>  pkg
-infrastructure/worker         ──┘
+infrastructure/worker         ──┼──>  common  ──>  pkg
+infrastructure/apigateway     ──┘
 ```
 
 - `pkg/*` не зависит ни от кого — самый нижний слой.
 - `common/*` может зависеть от `pkg/*`, но не от `infrastructure/*`.
-- `infrastructure/control-plane` и `infrastructure/worker` зависят от `common/*` и `pkg/*`, но **не друг от друга** на уровне Go-пакетов — они два разных бинарника (`cmd/control-plane`, `cmd/worker`) и общаются между собой только по сети через контракт из `common/api` (то есть через тот же gRPC, что видит и внешний клиент). Так вы физически не сможете случайно "срезать угол" и вызвать внутреннюю функцию другого сервиса напрямую в обход протокола — что как раз то, ради чего вы строите распределённую систему, а не монолит.
+- `infrastructure/control-plane`, `infrastructure/worker` и `infrastructure/apigateway` зависят от `common/*` и `pkg/*`, но **не друг от друга** на уровне Go-пакетов — это часть из **четырёх** независимых бинарников системы (§0.1: `cmd/control-plane`, `cmd/worker`, `cmd/orc`, `cmd/apigateway`) и общаются между собой только по сети через контракты из `common/api`/`common/client` (то есть через тот же gRPC, что видит и внешний клиент). `cmd/orc` отдельного `infrastructure`-пакета не требует — это тонкий клиент прямо в `cmd/orc/main.go`, использующий `common/client.LeaderAwareClient` (§10.2, §10.3). Так вы физически не сможете случайно "срезать угол" и вызвать внутреннюю функцию другого сервиса напрямую в обход протокола — что как раз то, ради чего вы строите распределённую систему, а не монолит.
 
-Если хотите, чтобы это правило проверялось автоматически, а не на честном слове — добавьте в CI `golangci-lint` с правилом `depguard`, запрещающим `pkg/*` импортировать `common/*` или `infrastructure/*`, и `infrastructure/control-plane/*` импортировать `infrastructure/worker/*` (и наоборот).
+Если хотите, чтобы это правило проверялось автоматически, а не на честном слове — добавьте в CI `golangci-lint` с правилом `depguard`, запрещающим `pkg/*` импортировать `common/*` или `infrastructure/*`, и любому из `infrastructure/control-plane`, `infrastructure/worker`, `infrastructure/apigateway` импортировать друг друга напрямую.
 
 `pkg/*` — это обычные Go-пакеты внутри единого `go.mod` монорепы, без собственных `go.mod`. Разделение на `pkg` — чисто про архитектурную дисциплину (эти пакеты можно скопировать в другой проект без правок), а не про то, что они физически отдельные модули. Заводить отдельный `go.mod`/`go.work` под них имеет смысл только в момент, когда вы реально решите опубликовать, например, `pkg/raft` как самостоятельную библиотеку в отдельном репозитории — а не заранее "на всякий случай".
 
@@ -1076,6 +1179,7 @@ infrastructure/worker         ──┘
 | **7. Observability** | slog + Prometheus + Jaeger, docker-compose со стеком | Dashboard в Grafana показывает live-метрики кластера при прогоне нагрузочного теста |
 | **8. Multi-tenancy** | Tenant, API keys, квоты, партиционирование очереди | Два разных API-ключа видят только свои workflows, превышение квоты корректно отклоняется |
 | **9. Performance & polish** | профилирование (`pprof`), устранение узких мест, документация | Достигнуты ориентиры из §11, README с архитектурной диаграммой и инструкцией запуска |
+| **10. API Gateway & CLI** | `common/client.LeaderAwareClient`, полноценный `orc` (§10.3), `infrastructure/apigateway` (§10.4) с REST/SSE поверх `OrchestratorAPI` | Фронтенд получает статус workflow через SSE от Gateway; `orc` продолжает работать даже после ручного failover лидера |
 
 ---
 
