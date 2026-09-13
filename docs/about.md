@@ -38,36 +38,36 @@
 
 ```mermaid
 flowchart TD
-    Browser[Browser / Frontend]
-    Gateway[apigateway]
-    CLI[CLI: orc]
+   Browser[Browser / Frontend]
+   Gateway[apigateway]
+   CLI[CLI: orc]
 
-    subgraph ControlPlane["Control Plane: Raft cluster, 3 узла"]
-        direction LR
-        N1[Node 1 Leader]
-        N2[Node 2 Follower]
-        N3[Node 3 Follower]
-        N1 <-->|Raft RPC| N2
-        N1 <-->|Raft RPC| N3
-        N2 <-->|Raft RPC| N3
-    end
+   subgraph ControlPlane["Control Plane: Raft cluster, 3 узла"]
+      direction LR
+      N1[Node 1 Leader]
+      N2[Node 2 Follower]
+      N3[Node 3 Follower]
+      N1 <-->|Raft RPC| N2
+      N1 <-->|Raft RPC| N3
+      N2 <-->|Raft RPC| N3
+   end
 
-    subgraph DataPlane["Data Plane"]
-        direction LR
-        W1[Worker 1]
-        W2[Worker 2]
-        W3[Worker N]
-    end
+   subgraph DataPlane["Data Plane"]
+      direction LR
+      W1[Worker 1]
+      W2[Worker 2]
+      W3[Worker N]
+   end
 
-    Obs[Observability: Prometheus / Loki / Jaeger]
+   Obs[Observability: Prometheus / Loki / Jaeger]
 
-    Browser -->|HTTP/JSON, SSE| Gateway
-    Gateway -->|gRPC, LeaderAwareClient| N1
-    CLI -->|gRPC, LeaderAwareClient| N1
-    N1 -->|dispatch задач| DataPlane
-    DataPlane -->|heartbeat и результаты| N1
-    ControlPlane -.->|метрики и логи| Obs
-    DataPlane -.->|метрики и логи| Obs
+   Browser -->|HTTP/JSON, SSE| Gateway
+   Gateway -->|gRPC, LeaderAwareClient| N1
+   CLI -->|gRPC, LeaderAwareClient| N1
+   N1 -->|dispatch задач| DataPlane
+   DataPlane -->|heartbeat и результаты| N1
+   ControlPlane -.->|метрики и логи| Obs
+   DataPlane -.->|метрики и логи| Obs
 ```
 
 **Принцип разделения ответственности:**
@@ -172,6 +172,7 @@ type WorkerNode struct {
 	ID            string
 	Address       string // host:port для gRPC
 	Labels        map[string]string // например {"gpu":"true","region":"eu"} — для селекторов
+	Capabilities  []string          // ["shell","http"] — какие типы задач умеет исполнять (§6.4)
 	Capacity      int    // сколько задач параллельно может исполнять
 	RunningTasks  int
 	LastHeartbeat time.Time
@@ -350,16 +351,65 @@ type Command struct {
 
 // OrchestratorFSM реализует raft.FSM поверх доменной модели из common/domain
 type OrchestratorFSM struct {
-	workflows map[string]*domain.Workflow // ключ — Workflow.ID
-	workers   map[string]*domain.WorkerNode // ключ — WorkerNode.ID
+	mu           sync.RWMutex
+	workflows    map[string]*domain.Workflow    // ключ — Workflow.ID
+	workers      map[string]*domain.WorkerNode  // ключ — WorkerNode.ID
+	tasksByWorker map[string]map[string]struct{} // workerID -> множество TaskID, назначенных на него
 }
 
 func (f *OrchestratorFSM) Apply(entry raft.LogEntry) (interface{}, error) {
-	// десериализовать entry.Command в Command, диспетчеризовать по Type
+	// десериализовать entry.Command в Command, диспетчеризовать по Type, дальше — обновить
+	// domain-состояние (workflows/workers) конкретно под тип команды.
+	//
+	// Обслуживание tasksByWorker НЕ размазывайте по типам команд (легко забыть один из кейсов
+	// и рассинхронить индекс с реальным статусом). Вместо этого заведите единую внутреннюю
+	// функцию updateTaskStatus(task, newStatus), через которую проходит ЛЮБОЙ переход статуса
+	// задачи — и в CmdAssignTask (READY -> DISPATCHED), и в CmdUpdateTaskStatus (все остальные
+	// переходы), и в переназначении при смерти воркера. Внутри неё — единственное место, где
+	// индекс мутируется:
+	//
+	//   func (f *OrchestratorFSM) updateTaskStatus(task *domain.Task, newStatus domain.TaskStatus) {
+	//       prevStatus := task.Status
+	//       task.Status = newStatus
+	//       switch {
+	//       case newStatus == domain.TaskDispatched:
+	//           // задача только что закреплена за task.AssignedTo — добавить в индекс
+	//           if f.tasksByWorker[task.AssignedTo] == nil {
+	//               f.tasksByWorker[task.AssignedTo] = make(map[string]struct{})
+	//           }
+	//           f.tasksByWorker[task.AssignedTo][task.ID] = struct{}{}
+	//       case prevStatus == domain.TaskDispatched || prevStatus == domain.TaskRunning:
+	//           // задача только что ПЕРЕСТАЛА быть закреплена за воркером — не важно, куда
+	//           // именно она ушла (READY при переназначении, SUCCEEDED/FAILED/CANCELLED) —
+	//           // условие одно: "раньше была на воркере, теперь нет"
+	//           delete(f.tasksByWorker[task.AssignedTo], task.ID)
+	//       }
+	//   }
+	//
+	// Такое условие "prevStatus было DISPATCHED/RUNNING, а новое — нет" сразу покрывает все
+	// случаи выхода задачи из-под воркера одним проверяемым правилом, вместо того чтобы
+	// перечислять терминальные статусы (SUCCEEDED/FAILED/CANCELLED/READY) вручную и рисковать
+	// забыть один при добавлении нового статуса в будущем.
 	// см. §3.6 про детерминизм
 	return nil, nil
 }
+
+// TasksAssignedTo — O(k), где k — число задач именно на этом воркере,
+// а не O(общее число задач во всех workflow). Используется в §6.3 при смерти воркера.
+func (f *OrchestratorFSM) TasksAssignedTo(workerID string) []string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	ids := make([]string, 0, len(f.tasksByWorker[workerID]))
+	for taskID := range f.tasksByWorker[workerID] {
+		ids = append(ids, taskID)
+	}
+	return ids
+}
 ```
+
+**Почему это НЕ отдельная Raft-команда, а побочный эффект внутри `Apply`.** `tasksByWorker` полностью выводим из уже существующих полей (`Task.AssignedTo` + `Task.Status`) — реплицировать его отдельно было бы дублированием источника истины и риском рассинхрона. Он безопасно пересчитывается детерминированно на каждом узле как побочный эффект применения уже реплицированных команд — это не нарушает детерминизм `Apply`, потому что вычисляется исключительно из данных самой команды, без обращения к времени/сети/рандому.
+
+**Что с `Snapshot`/`Restore` (§7.3).** Индекс можно вообще не сериализовать в snapshot — после `Restore` из `workflows` (которые там уже есть) он за один проход пересчитывается заново при старте узла: это разовая стоимость `O(общее число задач)` **только при рестарте процесса**, а не при каждой смерти воркера, — как раз то, чего вы и хотели избежать.
 
 Важно: `Apply` должен быть **детерминированным** — одинаковый вход даёт одинаковый выход на всех узлах (никаких `time.Now()`, `rand`, обращений к сети внутри `Apply`; время передавайте как поле команды, проставленное на этапе создания записи лидером).
 
@@ -385,9 +435,18 @@ import (
 	"distributed-orchestrator/pkg/raft"
 )
 
+// stateReader — то немногое, что WorkflowEngine читает из FSM поверх generic raft.FSM.Apply.
+// *raftfsm.OrchestratorFSM удовлетворяет этому интерфейсу неявно — конкретные геттеры лежат там (§3.5),
+// raft.FSM их не содержит, потому что pkg/raft ничего не знает о Task/Workflow.
+type stateReader interface {
+	TaskStatus(taskID string) domain.TaskStatus
+	TasksAssignedTo(workerID string) []string // §3.5 — обратный индекс, нужен §6.3 при смерти воркера
+}
+
 type WorkflowEngine struct {
-	fsm  raft.FSM  // интерфейс из pkg/raft; конкретно — *raftfsm.OrchestratorFSM
-	node raft.Node // текущий узел Raft (нужен, чтобы знать: лидер ли я)
+	fsm   raft.FSM   // интерфейс из pkg/raft — запись команд
+	state stateReader // конкретные геттеры поверх того же *raftfsm.OrchestratorFSM — чтение
+	node  raft.Node   // текущий узел Raft (нужен, чтобы знать: лидер ли я)
 }
 
 // SubmitWorkflow вызывается из API. Валидирует DAG, затем проводит через Raft.
@@ -397,9 +456,26 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow)
 // Пересчитывает READY-множество для зависимых задач.
 func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error
 
+// TaskStatus — используется в §5.2 (retryQueue-триггер отслеживания задачи)
+func (e *WorkflowEngine) TaskStatus(taskID string) domain.TaskStatus {
+	return e.state.TaskStatus(taskID)
+}
+
+// TasksAssignedTo — используется в §6.3 (переназначение задач умершего воркера без скана всех workflow)
+func (e *WorkflowEngine) TasksAssignedTo(workerID string) []string {
+	return e.state.TasksAssignedTo(workerID)
+}
+
+// ReassignTask — переводит DISPATCHED/RUNNING задачу обратно в READY через Raft (CmdUpdateTaskStatus)
+// и кладёт её в ReadyQueue планировщика. Вызывается из §6.3 при смерти воркера — по одной на каждый
+// taskID из TasksAssignedTo, а не сканированием всех workflow.
+func (e *WorkflowEngine) ReassignTask(ctx context.Context, taskID string) error
+
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач
 func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string // ID готовых к запуску задач
 ```
+
+**Не дублируйте код постановки задачи в очередь планировщика.** И `recomputeReadyTasks` (первичный перевод в `READY`), и `ReassignTask` (повторная постановка после смерти воркера) заканчиваются одним и тем же действием — задача уходит в `Scheduler`. Вынесите это в отдельный приватный метод (например `pushToScheduler(task)`), который вызывают оба места, а не копируйте сборку запроса/колбэка дважды — иначе при изменении формата задачи для планировщика придётся синхронно править оба места, и рано или поздно один забудут.
 
 **Валидация DAG при создании** (обязательно, до попадания в Raft-лог, чтобы не тратить консенсус на заведомо невалидные данные):
 1. Все `TaskID` в `DependsOn` существуют в рамках этого workflow.
@@ -423,6 +499,7 @@ type Scheduler struct {
 	workerClient   orchestration.WorkerClient     // §6.1 — gRPC-клиент к WorkerRPC.Dispatch
 	queue          *ReadyQueue                    // задачи в статусе READY, ждущие назначения
 	retryQueue     *retryqueue.RetryQueue         // pkg/retryqueue, см. §5.2
+	engine         *engine.WorkflowEngine         // §4 — TaskStatus для retryQueue-триггера в commitAssignment
 }
 
 // SelectWorker — алгоритм подбора. Начните с простого, усложняйте по мере роста требований.
@@ -430,10 +507,37 @@ func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) 
 ```
 
 **Алгоритмы `SelectWorker`, от простого к сложному** (реализуйте по очереди, это хороший инкрементальный план):
+0. *Capability filter* (обязательный, самый первый) — воркер должен уметь исполнять именно этот `task.Command.Type`. Без этого шага задача может уйти воркеру, у которого просто нет нужного `Executor` (§6.4), и `Dispatch` бессмысленно провалится.
 1. *Round-robin* среди `ALIVE`-воркеров с `RunningTasks < Capacity`.
 2. *Least-loaded* — воркер с минимальным `RunningTasks / Capacity`.
 3. *Label selector* — задача может требовать `Labels` (например `gpu: true`), фильтруем воркеров по совпадению меток до применения least-loaded.
 4. (опционально) *Bin-packing* с учётом заявленных ресурсов задачи (cpu/mem), если добавите такие поля в `TaskSpec`.
+
+```go
+func (s *Scheduler) SelectWorker(task domain.Task, workers []domain.WorkerNode) (string, error) {
+	candidates := filterByCapability(workers, task.Command.Type) // шаг 0, всегда первый
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no worker capable of executing type %s", task.Command.Type)
+	}
+	// дальше — шаги 1-4 уже по candidates, не по всем workers
+}
+```
+
+**Разные пулы воркеров из одного бинарника.** Не пишите отдельные Go-программы под каждый тип задачи (`cmd/worker-shell`, `cmd/worker-http`) — это дублирует код регистрации/heartbeat/gRPC-сервера. Один и тот же `cmd/worker` (§6.4, executor registry) получает разный набор `Capabilities` через конфиг при деплое:
+
+```yaml
+# worker-shell-pool.yaml — тяжёлые задачи, можно держать в более закрытом сетевом сегменте
+executors: [shell]
+capacity: 4
+labels: {pool: "shell-heavy"}
+---
+# worker-http-pool.yaml — лёгкие задачи, масштабируется независимо и агрессивнее
+executors: [http]
+capacity: 50
+labels: {pool: "http-light"}
+```
+
+Это даёт независимое масштабирование (можно поднять 50 реплик `http`-пула и 2 реплики `shell`-пула) и изоляцию по безопасности (компрометация `shell`-воркера, который исполняет произвольные команды, не даёт доступа к процессу, обрабатывающему `http`-задачи), не платя ценой дублирования кода воркера — код один, разный только конфиг запуска.
 
 **Важно:** назначение задачи воркеру — это тоже команда через Raft (`CmdAssignTask`), а не прямой gRPC-вызов из планировщика напрямую в воркер до записи в лог. Порядок:
 1. Лидер решает: `task X → worker Y`.
@@ -542,17 +646,26 @@ func (s *Scheduler) commitAssignment(ctx context.Context, task domain.Task, work
 // infrastructure/control-plane/orchestration/registry.go
 package orchestration
 
+// taskReassigner — то немногое, что WorkerRegistry нужно от WorkflowEngine при смерти воркера.
+// *engine.WorkflowEngine удовлетворяет этому интерфейсу неявно.
+type taskReassigner interface {
+	TasksAssignedTo(workerID string) []string        // §4 — обратный индекс из FSM
+	ReassignTask(ctx context.Context, taskID string) error // §4 — перевод DISPATCHED/RUNNING -> READY через Raft
+}
+
 type WorkerRegistry struct {
 	mu          sync.RWMutex
 	workers     map[string]*domain.WorkerNode // ключ — WorkerNode.ID
 	retryQueue  *retryqueue.RetryQueue         // pkg/retryqueue — health-check по dead man's switch
 	onDeadHooks []func(workerID string)        // подписчики на "воркер умер"; Registry не знает, что внутри
+	engine      taskReassigner                  // нужен только в markDead, см. §6.3
 }
 
-func NewWorkerRegistry(retryQueue *retryqueue.RetryQueue) *WorkerRegistry {
+func NewWorkerRegistry(retryQueue *retryqueue.RetryQueue, engine taskReassigner) *WorkerRegistry {
 	return &WorkerRegistry{
 		workers:    make(map[string]*domain.WorkerNode),
 		retryQueue: retryQueue,
+		engine:     engine,
 	}
 }
 
@@ -643,11 +756,12 @@ func (c *GRPCWorkerClient) CloseConn(workerID string) {
 Сборка в `cmd/control-plane/main.go` — единственное место во всей системе, где `WorkerRegistry` и `WorkerClient` вообще узнают друг о друге:
 
 ```go
-registry := orchestration.NewWorkerRegistry(retryQueue)
-workerClient := orchestration.NewGRPCWorkerClient(registry) // *WorkerRegistry неявно реализует addressResolver
-registry.OnWorkerDead(workerClient.CloseConn)                // подписка: сигнатуры совпадают один в один
+wfEngine := engine.New(fsm, raftNode)                          // §4 — сначала engine, ему нужны только fsm/raftNode
+registry := orchestration.NewWorkerRegistry(retryQueue, wfEngine) // *engine.WorkflowEngine неявно реализует taskReassigner
+workerClient := orchestration.NewGRPCWorkerClient(registry)       // *WorkerRegistry неявно реализует addressResolver
+registry.OnWorkerDead(workerClient.CloseConn)                     // подписка: сигнатуры совпадают один в один
 
-sched := scheduler.New(registry, workerClient, readyQueue, retryQueue)
+sched := scheduler.New(registry, workerClient, readyQueue, retryQueue, wfEngine)
 ```
 
 Если позже понадобится ещё один подписчик на "воркер умер" (например, метрика `worker_deaths_total` или пересчёт квот тенанта) — это ещё одна строчка `registry.OnWorkerDead(...)` в `main.go`, без единой правки в `WorkerRegistry` или `WorkerClient`.
@@ -679,6 +793,7 @@ message RegisterRequest {
   string address = 2;
   map<string, string> labels = 3;
   int32 capacity = 4;
+  repeated string capabilities = 5; // ["shell","http"] — какие типы задач умеет исполнять, §6.4
 }
 message RegisterResponse {
   bool accepted = 1;
@@ -736,7 +851,7 @@ func (r *WorkerRegistry) Register(w domain.WorkerNode) error {
 		Do: func(ctx context.Context) bool {
 			worker := r.workers[w.ID]
 			if time.Since(worker.LastHeartbeat) > heartbeatGracePeriod {
-				r.markDead(w.ID)
+				r.markDead(ctx, w.ID)
 				return false // хватит проверять — воркер мёртв
 			}
 			return true // ещё жив, продолжаем следить
@@ -756,13 +871,18 @@ func (r *WorkerRegistry) Heartbeat(workerID string, runningTasks int) error {
 	return nil
 }
 
-func (r *WorkerRegistry) markDead(workerID string) {
+func (r *WorkerRegistry) markDead(ctx context.Context, workerID string) {
 	r.mu.Lock()
 	r.workers[workerID].Status = domain.WorkerDead
 	r.mu.Unlock()
 
-	// вернуть DISPATCHED/RUNNING задачи этого воркера в READY — команда через Raft, не прямая мутация
-	r.reassignTasksOf(workerID)
+	// O(k), где k — число задач именно на этом воркере: читаем обратный индекс из FSM (§3.5),
+	// а не сканируем все workflow всех тенантов в поисках "у кого AssignedTo == workerID"
+	for _, taskID := range r.engine.TasksAssignedTo(workerID) {
+		if err := r.engine.ReassignTask(ctx, taskID); err != nil {
+			log.Error("failed to reassign task after worker death", "task", taskID, "worker", workerID, "err", err)
+		}
+	}
 
 	// уведомить подписчиков — Registry не знает, что именно они делают (закрыть gRPC-соединение,
 	// инкрементировать метрику и т.п.), это их дело
@@ -778,13 +898,41 @@ func (r *WorkerRegistry) markDead(workerID string) {
 
 ### 6.4 Исполнение задачи на воркере
 
+Не захардкоживайте диспетчеризацию по типу задачи (`if type == "shell" ... else if type == "http"`) — сразу заведите реестр, куда исполнители регистрируются, а не встроены в код диспетчера. Это ничего не стоит сейчас и снимает целый класс правок ядра в будущем, когда типов задач станет больше:
+
 ```go
-// infrastructure/worker/executor/executor.go
-package executor
+// pkg/executorregistry/registry.go — generic, ничего не знает о домене, поэтому в pkg
+package executorregistry
 
 type Executor interface {
 	Execute(ctx context.Context, spec domain.TaskSpec, timeout time.Duration) (domain.TaskResult, error)
 }
+
+type Registry struct {
+	mu        sync.RWMutex
+	executors map[string]Executor
+}
+
+func (r *Registry) Register(taskType string, ex Executor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.executors[taskType] = ex
+}
+
+func (r *Registry) Get(taskType string) (Executor, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ex, ok := r.executors[taskType]
+	if !ok {
+		return nil, fmt.Errorf("unknown task type: %s", taskType)
+	}
+	return ex, nil
+}
+```
+
+```go
+// infrastructure/worker/executor/shell.go, http.go
+package executor
 
 // ShellExecutor — первая реализация: выполняет payload["cmd"] через os/exec
 type ShellExecutor struct{}
@@ -793,7 +941,16 @@ type ShellExecutor struct{}
 type HTTPExecutor struct{ client *http.Client }
 ```
 
-Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
+Воркер при старте регистрирует то, что умеет:
+
+```go
+// cmd/worker/main.go
+registry := executorregistry.New()
+registry.Register("shell", &executor.ShellExecutor{})
+registry.Register("http", &executor.HTTPExecutor{client: http.DefaultClient})
+```
+
+Диспетчер при `Dispatch` (§6.2) просто зовёт `registry.Get(req.Type)` и исполняет — новый тип задачи добавляется новым `Executor` и одной строчкой `Register`, без правок диспетчеризации.
 
 Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
 
@@ -1180,10 +1337,82 @@ infrastructure/apigateway     ──┘
 | **8. Multi-tenancy** | Tenant, API keys, квоты, партиционирование очереди | Два разных API-ключа видят только свои workflows, превышение квоты корректно отклоняется |
 | **9. Performance & polish** | профилирование (`pprof`), устранение узких мест, документация | Достигнуты ориентиры из §11, README с архитектурной диаграммой и инструкцией запуска |
 | **10. API Gateway & CLI** | `common/client.LeaderAwareClient`, полноценный `orc` (§10.3), `infrastructure/apigateway` (§10.4) с REST/SSE поверх `OrchestratorAPI` | Фронтенд получает статус workflow через SSE от Gateway; `orc` продолжает работать даже после ручного failover лидера |
+| **11. Universal Task Engine** | `Output` в `TaskResult` + интерполяция `{{tasks.x.output.y}}` (§16.1), `approval`/`wait` как встроенные типы задач (§16.2) | Можно описать в YAML произвольный процесс (не только CI/CD) с человеческим approval-gate и передачей данных между задачами, не трогая ядро движка |
 
 ---
 
-## 16. Полезные первоисточники
+## 16. Расширяемость: universal task engine
+
+Всё, что описано в §1–§15, уже достаточно, чтобы гонять статичный DAG (CI/CD-пайплайн). Этот раздел — как из того же ядра сделать движок, способным описать в YAML **произвольный процесс**, не только код: закупки, согласования, инциденты и т.п. Ничего из §1–§15 не переписывается — это надстройка поверх существующих `Task`/`Scheduler`/`WorkerRegistry`.
+
+`Executor registry` и `Capabilities` — часть этой же идеи расширяемости, но перенесены раньше, в §6.4 и §5.1/§6.2 соответственно, потому что естественно ложатся уже в Этап 3 (несколько воркеров) — нет смысла ждать до этого раздела, если у вас и так уже несколько воркеров и больше одного типа задач.
+
+### 16.1 Передача данных между задачами
+
+`TaskResult` (§2) сейчас несёт только `Stdout`/`Stderr`/`ExitCode` — этого недостаточно, чтобы одна задача передавала структурированный результат следующей:
+
+```go
+type TaskResult struct {
+	ExitCode int
+	Stdout   string
+	Stderr   string
+	Error    string
+	Duration time.Duration
+	Output   map[string]any // структурированный результат, доступный зависимым задачам
+}
+```
+
+YAML резолвит выражения вида `{{tasks.<id>.output.<key>}}` — движок подставляет значения из `Output` завершённых зависимостей перед диспатчем следующей задачи:
+
+```yaml
+tasks:
+  - id: get-price
+    type: http
+    payload: {url: "https://api.supplier.com/price"}
+  - id: notify
+    depends_on: [get-price]
+    type: slack-notify
+    payload: {message: "Цена: {{tasks.get-price.output.price}}"}
+```
+
+**Не пишите свой парсер выражений с нуля** — возьмите готовую библиотеку (`expr-lang/expr` или `google/cel-go`), это отдельный, рискованный по срокам проект, если делать с нуля.
+
+### 16.2 Встроенные типы задач без парсера условий — approval и wait
+
+Это самое дешёвое расширение с самой высокой отдачей — не требует expression evaluator'а вообще, только новый `TaskStatus` и два `Executor`:
+
+```yaml
+- id: cfo-approval
+  depends_on: [budget-check]
+  type: approval
+  approvers: ["cfo@company.com"]
+  timeout: 72h        # если не согласовано за 72ч — эскалация/TaskFailed, по вашей политике
+- id: cooldown
+  type: wait
+  duration: 3d
+```
+
+`approval`-задача переходит в `RUNNING` и **зависает** там неопределённо долго — никакой `Executor.Execute` для неё не завершает работу сам, завершение приходит извне через API:
+
+```protobuf
+// docs/proto/orchestrator.proto — дополнение к OrchestratorAPI (§10.1)
+rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
+rpc RejectTask(RejectTaskRequest) returns (RejectTaskResponse);
+```
+
+Обработчик просто вызывает уже существующий `WorkflowEngine.OnTaskCompleted` (§4) с нужным статусом — никакой новой логики в движке не нужно, только новый способ её вызвать.
+
+`wait`-задача ещё проще — `Executor.Execute` для неё просто спит `duration` (или, лучше, регистрирует себя в `pkg/retryqueue`, §5.2, чтобы не занимать goroutine воркера впустую на дни) и завершается сама.
+
+### 16.3 Что осознанно оставлено вне рамок этого ТЗ
+
+- **`when`/`for_each`** (условное ветвление и динамический fan-out по выражению) — требуют expression evaluator и динамическое дописывание `wf.Tasks` во время исполнения (не только на `SubmitWorkflow`). Самая сложная часть из всего раздела — беритесь только после того, как §16.1–§16.2 (и Executor registry/`Capabilities` из §5.1/§6.2/§6.4) уже работают.
+- **Триггеры запуска** (`cron`/`webhook`/`event`) — отдельный компонент, слушающий внешние события и вызывающий `SubmitWorkflow` — не меняет ядро движка, это просто ещё один клиент `OrchestratorAPI` (§10.1), как `orc`/`apigateway`.
+- **Sub-workflow / include** — переиспользование готового куска процесса — требует решить, как вложенный workflow встраивается в родительский DAG (общий `Raft`-лог или собственный, с агрегацией статуса) — сознательно не специфицируется здесь, чтобы не гадать заранее архитектуру, которая сильно зависит от конкретного продукта.
+
+---
+
+## 17. Полезные первоисточники
 
 - Raft: *"In Search of an Understandable Consensus Algorithm"*, Ongaro & Ousterhout — читайте до реализации §3, а не вместо неё.
 - MapReduce: у вас уже есть реализация в репозитории — сравните архитектурные решения (master/worker, heartbeat, переназначение при таймауте) с §5–6 этого ТЗ, они концептуально похожи.
