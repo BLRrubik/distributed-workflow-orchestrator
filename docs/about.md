@@ -1074,6 +1074,75 @@ service OrchestratorAPI {
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
   rpc StreamWorkflowEvents(GetWorkflowRequest) returns (stream WorkflowEvent); // для CLI/Gateway: live-статус
 }
+
+// TaskDefinition — то, что клиент присылает при создании workflow (соответствует §10.5 YAML один в один).
+// Валидация DAG (§4: существование зависимостей, поиск циклов) происходит на control-plane ДО того,
+// как это попадёт в Raft-лог — сюда долетает ровно то, что написал человек в YAML, без изменений.
+message TaskDefinition {
+  string id = 1;
+  repeated string depends_on = 2;
+  string type = 3;                    // "shell" | "http" | ... — см. §6.4, executor registry
+  map<string, string> payload = 4;
+  int32 max_retries = 5;
+  int64 retry_backoff_seconds = 6;
+  int64 timeout_seconds = 7;
+}
+
+message SubmitWorkflowRequest {
+  string name = 1;
+  repeated TaskDefinition tasks = 2;
+  // TenantID НЕ передаётся полем — проставляется на control-plane из контекста аутентификации
+  // (§9.2, TenantAuthMiddleware), иначе клиент мог бы подделать чужой TenantID в теле запроса.
+}
+message SubmitWorkflowResponse {
+  string workflow_id = 1;
+}
+
+message GetWorkflowRequest {
+  string workflow_id = 1;
+}
+
+// TaskStatusInfo — проекция domain.Task (§2) наружу: не весь Task целиком (там есть внутренние
+// детали вроде AssignedTo, нужные только control-plane), а то, что осмысленно показать клиенту.
+message TaskStatusInfo {
+  string id = 1;
+  string name = 2;
+  string status = 3;       // PENDING | READY | DISPATCHED | RUNNING | SUCCEEDED | FAILED | RETRYING | CANCELLED
+  string assigned_to = 4;  // WorkerID, если уже назначена; пусто для PENDING/READY
+  int32 attempt = 5;
+  string error = 6;        // заполнено, если status == FAILED
+}
+
+message WorkflowStatusResponse {
+  string workflow_id = 1;
+  string name = 2;
+  string status = 3;       // PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
+  repeated TaskStatusInfo tasks = 4;
+}
+
+message CancelWorkflowRequest {
+  string workflow_id = 1;
+}
+message CancelWorkflowResponse {
+  bool accepted = 1;
+}
+
+// WorkflowEvent — одна запись в потоке StreamWorkflowEvents. task_id пустой для событий
+// уровня всего workflow (например WORKFLOW_STATUS_CHANGED -> SUCCEEDED).
+message WorkflowEvent {
+  string workflow_id = 1;
+  string task_id = 2;
+  string event_type = 3;   // "TASK_STATUS_CHANGED" | "WORKFLOW_STATUS_CHANGED"
+  string status = 4;
+  int64 timestamp = 5;     // unix-время на лидере, проставляется ПРИ ЗАПИСИ команды в Raft-лог (§3.5,
+                            // не берите time.Now() на read-пути — иначе значение не детерминировано)
+}
+
+// LeaderHint — детали gRPC-ошибки "not leader" (§10.2): follower подсказывает клиенту,
+// на какой адрес реально стоит повторить запрос.
+message LeaderHint {
+  string leader_address = 1;
+}
 ```
 
 ### 10.2 `LeaderAwareClient` — общий клиент для CLI и Gateway
@@ -1395,9 +1464,27 @@ tasks:
 `approval`-задача переходит в `RUNNING` и **зависает** там неопределённо долго — никакой `Executor.Execute` для неё не завершает работу сам, завершение приходит извне через API:
 
 ```protobuf
-// docs/proto/orchestrator.proto — дополнение к OrchestratorAPI (§10.1)
+// docs/proto/orchestrator.proto — дополнение к service OrchestratorAPI (§10.1)
 rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
 rpc RejectTask(RejectTaskRequest) returns (RejectTaskResponse);
+
+message ApproveTaskRequest {
+  string task_id = 1;
+  string approved_by = 2; // из контекста аутентификации (§9.2) или явно, если approver отличается от вызывающего
+  string comment = 3;
+}
+message ApproveTaskResponse {
+  bool accepted = 1;
+}
+
+message RejectTaskRequest {
+  string task_id = 1;
+  string rejected_by = 2;
+  string reason = 3;
+}
+message RejectTaskResponse {
+  bool accepted = 1;
+}
 ```
 
 Обработчик просто вызывает уже существующий `WorkflowEngine.OnTaskCompleted` (§4) с нужным статусом — никакой новой логики в движке не нужно, только новый способ её вызвать.

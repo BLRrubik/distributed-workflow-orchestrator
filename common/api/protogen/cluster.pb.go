@@ -290,15 +290,14 @@ func (x *HeartbeatResponse) GetAcknowledged() bool {
 
 type ResultRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	TaskId        string                 `protobuf:"bytes,3,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	Status        TaskReportStatus       `protobuf:"varint,4,opt,name=status,proto3,enum=entities.TaskReportStatus" json:"status,omitempty"`
-	ExitCode      int32                  `protobuf:"varint,5,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // валиден только при status == SUCCEEDED/FAILED
-	Stdout        string                 `protobuf:"bytes,6,opt,name=stdout,proto3" json:"stdout,omitempty"`
-	Stderr        string                 `protobuf:"bytes,7,opt,name=stderr,proto3" json:"stderr,omitempty"`
-	Error         string                 `protobuf:"bytes,8,opt,name=error,proto3" json:"error,omitempty"`
-	Duration      int64                  `protobuf:"varint,9,opt,name=duration,proto3" json:"duration,omitempty"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	TaskId        string                 `protobuf:"bytes,2,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	Status        TaskReportStatus       `protobuf:"varint,3,opt,name=status,proto3,enum=entities.TaskReportStatus" json:"status,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,4,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // валиден только при status == SUCCEEDED/FAILED
+	Stdout        string                 `protobuf:"bytes,5,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr        string                 `protobuf:"bytes,6,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	Error         string                 `protobuf:"bytes,7,opt,name=error,proto3" json:"error,omitempty"`
+	Duration      int64                  `protobuf:"varint,8,opt,name=duration,proto3" json:"duration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -331,13 +330,6 @@ func (x *ResultRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ResultRequest.ProtoReflect.Descriptor instead.
 func (*ResultRequest) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *ResultRequest) GetWorkerId() string {
-	if x != nil {
-		return x.WorkerId
-	}
-	return ""
 }
 
 func (x *ResultRequest) GetWorkflowId() string {
@@ -460,18 +452,17 @@ const file_cluster_proto_rawDesc = "" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12#\n" +
 	"\rrunning_tasks\x18\x02 \x01(\x05R\frunningTasks\"7\n" +
 	"\x11HeartbeatResponse\x12\"\n" +
-	"\facknowledged\x18\x01 \x01(\bR\facknowledged\"\x99\x02\n" +
-	"\rResultRequest\x12\x1b\n" +
-	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12\x1f\n" +
-	"\vworkflow_id\x18\x02 \x01(\tR\n" +
+	"\facknowledged\x18\x01 \x01(\bR\facknowledged\"\xfc\x01\n" +
+	"\rResultRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x17\n" +
-	"\atask_id\x18\x03 \x01(\tR\x06taskId\x122\n" +
-	"\x06status\x18\x04 \x01(\x0e2\x1a.entities.TaskReportStatusR\x06status\x12\x1b\n" +
-	"\texit_code\x18\x05 \x01(\x05R\bexitCode\x12\x16\n" +
-	"\x06stdout\x18\x06 \x01(\tR\x06stdout\x12\x16\n" +
-	"\x06stderr\x18\a \x01(\tR\x06stderr\x12\x14\n" +
-	"\x05error\x18\b \x01(\tR\x05error\x12\x1a\n" +
-	"\bduration\x18\t \x01(\x03R\bduration\"4\n" +
+	"\atask_id\x18\x02 \x01(\tR\x06taskId\x122\n" +
+	"\x06status\x18\x03 \x01(\x0e2\x1a.entities.TaskReportStatusR\x06status\x12\x1b\n" +
+	"\texit_code\x18\x04 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06stdout\x18\x05 \x01(\tR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\x06 \x01(\tR\x06stderr\x12\x14\n" +
+	"\x05error\x18\a \x01(\tR\x05error\x12\x1a\n" +
+	"\bduration\x18\b \x01(\x03R\bduration\"4\n" +
 	"\x0eResultResponse\x12\"\n" +
 	"\facknowledged\x18\x01 \x01(\bR\facknowledged*^\n" +
 	"\x10TaskReportStatus\x12\x17\n" +
