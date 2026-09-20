@@ -4,13 +4,14 @@ import (
 	"context"
 	"net"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
+	executrorregistry "github.com/blrrubik/distributed-workflow-orchestrator/pkg/executror_registry"
 	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/config"
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/server"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/service"
 	wp "github.com/blrrubik/distributed-workflow-orchestrator/pkg/worker_pool"
@@ -35,20 +36,26 @@ func main() {
 	}
 	workerPool := wp.NewWorkerPool(workerPoolOpts...)
 
-	executors := executor.NewExecutors()
 	clusterClient := client.NewClusterClient(cfg.ControlPlane.Address)
 
-	workerService := service.NewWorkerService(workerPool, executors, clusterClient, log)
+	executionRegistry := executrorregistry.New()
+	if err = executor.RegisterExecutors(executionRegistry, cfg.Worker.Capabilities); err != nil {
+		panic(err)
+	}
 
 	node := &domain.WorkerNode{
-		ID:       cfg.Worker.ID,
-		Address:  cfg.Worker.Address,
-		Capacity: cfg.Worker.Capacity,
+		ID:           cfg.Worker.ID,
+		Address:      cfg.Worker.Address,
+		Capacity:     cfg.Worker.Capacity,
+		Labels:       cfg.Worker.Labels,
+		Capabilities: cfg.Worker.Capabilities,
 	}
+
+	workerService := service.NewWorkerService(node, workerPool, executionRegistry, clusterClient, log)
 
 	// без успешной регистрации воркер бесполезен — control-plane о нём не знает,
 	// слать ему heartbeat/задачи некому; поднимать сервис в таком состоянии нельзя
-	if err = workerService.Start(ctx, node); err != nil {
+	if err = workerService.Start(ctx); err != nil {
 		panic(err)
 	}
 

@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +18,17 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/client"
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor/shell"
+	er "github.com/blrrubik/distributed-workflow-orchestrator/pkg/executror_registry"
 	wp "github.com/blrrubik/distributed-workflow-orchestrator/pkg/worker_pool"
 )
+
+func newTestRegistry() *er.Registry {
+	registry := er.New()
+	registry.Register("shell", &shell.Executor{})
+
+	return registry
+}
 
 type fakeClusterServer struct {
 	protogen.UnimplementedClusterServiceServer
@@ -66,7 +76,7 @@ func newTestService(t *testing.T, opts ...wp.WorkerPoolOpt) *WorkerService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pool := wp.NewWorkerPool(opts...)
-	ws := NewWorkerService(pool, executor.NewExecutors(), newFakeClusterClient(t), logger.New(logger.ERROR, false))
+	ws := NewWorkerService(pool, newTestRegistry(), newFakeClusterClient(t), logger.New(logger.ERROR, false))
 
 	require.NoError(t, ws.Start(ctx, &domain.WorkerNode{ID: "test-worker"}))
 
@@ -106,7 +116,7 @@ func TestWorkerService_DispatchTask_UnknownExecutorType(t *testing.T) {
 
 func TestWorkerService_Start_FailsWhenRegistrationRejected(t *testing.T) {
 	pool := wp.NewWorkerPool()
-	ws := NewWorkerService(pool, executor.NewExecutors(), client.NewClusterClient("127.0.0.1:0"), logger.New(logger.ERROR, false))
+	ws := NewWorkerService(pool, newTestRegistry(), client.NewClusterClient("127.0.0.1:0"), logger.New(logger.ERROR, false))
 
 	err := ws.Start(context.Background(), &domain.WorkerNode{ID: "w1"})
 	assert.Error(t, err, "недостижимый control-plane — Start обязан вернуть ошибку, а не тихо поднять пул")
@@ -125,11 +135,11 @@ func TestWorkerService_DispatchTask_SurvivesRequestContextCancel(t *testing.T) {
 	// проверяем только выживание задачи при отмене request ctx — регистрация
 	// тут не при чём, поэтому WorkerService собираем напрямую, минуя Start
 	ws := &WorkerService{
-		workerPool:    pool,
-		executors:     executor.NewExecutors(),
-		clusterClient: client.NewClusterClient("127.0.0.1:0"),
-		log:           log,
-		inFlight:      make(map[string]struct{}),
+		workerPool:        pool,
+		executionRegistry: newTestRegistry(),
+		clusterClient:     client.NewClusterClient("127.0.0.1:0"),
+		log:               log,
+		unique:            newUnique(),
 	}
 
 	// занимает единственного воркера, чтобы target исполнился уже после отмены reqCtx
@@ -212,16 +222,105 @@ func TestWorkerService_DispatchTask_AfterSuccess_AcceptsRedispatch(t *testing.T)
 
 	// ждём, пока задача реально доисполнится успехом и ключ снимется
 	assert.Eventually(t, func() bool {
-		ws.mu.Lock()
-		defer ws.mu.Unlock()
+		ws.unique.mu.Lock()
+		defer ws.unique.mu.Unlock()
 
-		_, stillInFlight := ws.inFlight[inFlightKey("wf-1", "task-1")]
+		_, stillInFlight := ws.unique.items[inFlightKey("wf-1", "task-1")]
 
 		return !stillInFlight
 	}, time.Second, 10*time.Millisecond)
 
 	// повторный диспатч той же пары уже после успеха — не дубликат, обычная задача
 	assert.NoError(t, ws.DispatchTask(context.Background(), req))
+}
+
+// controllableClusterServer — fake ClusterService, у которого Register/Heartbeat
+// можно на лету переключать в режим отказа, чтобы гонять suspend/re-register.
+type controllableClusterServer struct {
+	protogen.UnimplementedClusterServiceServer
+
+	registerFails  atomic.Bool
+	heartbeatFails atomic.Bool
+}
+
+func (s *controllableClusterServer) Register(context.Context, *protogen.RegisterRequest) (*protogen.RegisterResponse, error) {
+	if s.registerFails.Load() {
+		return nil, errors.New("control-plane unreachable")
+	}
+
+	return &protogen.RegisterResponse{Accepted: true}, nil
+}
+
+func (s *controllableClusterServer) Heartbeat(context.Context, *protogen.HeartbeatRequest) (*protogen.HeartbeatResponse, error) {
+	if s.heartbeatFails.Load() {
+		return nil, errors.New("heartbeat unreachable")
+	}
+
+	return &protogen.HeartbeatResponse{Acknowledged: true}, nil
+}
+
+func newControllableClusterClient(t *testing.T) (*client.GRPCClusterClient, *controllableClusterServer) {
+	t.Helper()
+
+	var listenConfig net.ListenConfig
+
+	lis, err := listenConfig.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	fake := &controllableClusterServer{}
+
+	srv := grpc.NewServer()
+	protogen.RegisterClusterServiceServer(srv, fake)
+
+	go func() { _ = srv.Serve(lis) }()
+
+	t.Cleanup(srv.Stop)
+
+	return client.NewClusterClient(lis.Addr().String()), fake
+}
+
+func TestWorkerService_Heartbeat_FailureSuspendsWorker(t *testing.T) {
+	clusterClient, fake := newControllableClusterClient(t)
+	fake.heartbeatFails.Store(true)
+	fake.registerFails.Store(true) // control-plane целиком недоступен — перерегистрация тоже проваливается
+
+	ws := &WorkerService{
+		workerPool:        wp.NewWorkerPool(),
+		executionRegistry: newTestRegistry(),
+		clusterClient:     clusterClient,
+		unique:            newUnique(),
+		log:               logger.New(logger.ERROR, false),
+		node:              &domain.WorkerNode{ID: "w1"},
+	}
+
+	ws.sendHeartbeat(context.Background())
+
+	assert.True(t, ws.suspended.Load())
+
+	err := ws.DispatchTask(context.Background(), &protogen.DispatchRequest{TaskId: "task-1", Type: "shell"})
+	assert.Error(t, err, "подвешенный воркер обязан отклонять Dispatch")
+}
+
+func TestWorkerService_Heartbeat_ResumesAfterSuccessfulReregister(t *testing.T) {
+	clusterClient, fake := newControllableClusterClient(t)
+	fake.heartbeatFails.Store(true)
+	fake.registerFails.Store(false) // heartbeat не проходит, но control-plane готов принять Register заново
+
+	ws := &WorkerService{
+		workerPool:        wp.NewWorkerPool(),
+		executionRegistry: newTestRegistry(),
+		clusterClient:     clusterClient,
+		unique:            newUnique(),
+		log:               logger.New(logger.ERROR, false),
+		node:              &domain.WorkerNode{ID: "w1"},
+	}
+
+	ws.sendHeartbeat(context.Background())
+
+	assert.False(t, ws.suspended.Load(), "успешная перерегистрация должна сразу снять suspend")
+
+	err := ws.DispatchTask(context.Background(), &protogen.DispatchRequest{TaskId: "task-1", Type: "shell"})
+	assert.NoError(t, err)
 }
 
 func TestWorkerService_DispatchTask_PoolFull(t *testing.T) {

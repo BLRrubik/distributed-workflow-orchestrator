@@ -47,6 +47,7 @@ func (r *WorkerRegistry) Register(w domain.WorkerNode) error {
 		existing.Address = w.Address
 		existing.Labels = w.Labels
 		existing.Capacity = w.Capacity
+		existing.Capabilities = w.Capabilities
 		existing.LastHeartbeat = time.Now()
 		existing.SetAlive()
 	} else {

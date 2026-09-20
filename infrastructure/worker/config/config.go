@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -13,10 +14,12 @@ type Config struct {
 		Port string `yaml:"port"`
 	} `yaml:"grpc"`
 	Worker struct {
-		ID       string `yaml:"id"`
-		Address  string `yaml:"address"` // куда control-plane будет диспатчить задачи
-		Capacity int    `yaml:"capacity"`
-		Pool     int    `yaml:"pool"`
+		ID           string            `yaml:"-"`
+		Address      string            `yaml:"address"` // куда control-plane будет диспатчить задачи
+		Capacity     int               `yaml:"capacity"`
+		Pool         int               `yaml:"pool"`
+		Labels       map[string]string `json:"labels"`
+		Capabilities []string          `json:"capabilities"`
 	} `yaml:"worker"`
 	ControlPlane struct {
 		Address string `yaml:"address"`
@@ -40,6 +43,8 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
+
+	config.Worker.ID = uuid.NewString()
 
 	return &config, nil
 }

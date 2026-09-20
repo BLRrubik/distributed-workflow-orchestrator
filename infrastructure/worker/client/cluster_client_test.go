@@ -23,6 +23,7 @@ type fakeClusterServer struct {
 	heartbeatCalls int
 	resultCalls    int
 	lastWorkerID   string
+	lastTaskID     string
 }
 
 func (f *fakeClusterServer) Register(_ context.Context, req *protogen.RegisterRequest) (*protogen.RegisterResponse, error) {
@@ -50,7 +51,7 @@ func (f *fakeClusterServer) ReportResult(_ context.Context, req *protogen.Result
 	defer f.mu.Unlock()
 
 	f.resultCalls++
-	f.lastWorkerID = req.GetWorkerId()
+	f.lastTaskID = req.GetTaskId()
 
 	return &protogen.ResultResponse{}, nil
 }
@@ -121,11 +122,12 @@ func TestGRPCClusterClient_Heartbeat(t *testing.T) {
 func TestGRPCClusterClient_ReportResult(t *testing.T) {
 	c, fake := newTestClusterClient(t)
 
-	_, err := c.ReportResult(context.Background(), &protogen.ResultRequest{WorkerId: "w1", TaskId: "task-1"})
+	_, err := c.ReportResult(context.Background(), &protogen.ResultRequest{TaskId: "task-1"})
 	require.NoError(t, err)
 
 	_, _, result := fake.calls(t)
 	assert.Equal(t, 1, result)
+	assert.Equal(t, "task-1", fake.lastTaskID)
 }
 
 func TestGRPCClusterClient_Close_Idempotent(t *testing.T) {

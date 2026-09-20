@@ -37,10 +37,11 @@ func RegisterServer(
 
 func (g *grpcServer) Register(ctx context.Context, request *protogen.RegisterRequest) (*protogen.RegisterResponse, error) {
 	wNode := domain.WorkerNode{
-		ID:       request.GetWorkerId(),
-		Address:  request.GetAddress(),
-		Labels:   request.GetLabels(),
-		Capacity: int(request.GetCapacity()),
+		ID:           request.GetWorkerId(),
+		Address:      request.GetAddress(),
+		Labels:       request.GetLabels(),
+		Capabilities: request.GetCapabilities(),
+		Capacity:     int(request.GetCapacity()),
 	}
 
 	if err := g.workerRegistry.Register(wNode); err != nil {
@@ -83,7 +84,6 @@ func (g *grpcServer) ReportResult(ctx context.Context, request *protogen.ResultR
 
 	if err := g.engine.OnTaskResponse(ctx, request.GetWorkflowId(), request.GetTaskId(), result); err != nil {
 		g.log.Error("failed to report result",
-			logger.String("worker", request.GetWorkerId()),
 			logger.Any("result", result),
 			logger.String("workflow", request.GetWorkflowId()),
 			logger.String("task", request.GetTaskId()),

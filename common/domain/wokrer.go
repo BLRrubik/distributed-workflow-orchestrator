@@ -7,7 +7,8 @@ type WorkerNode struct {
 	ID            string
 	Address       string            // host:port для gRPC
 	Labels        map[string]string // например {"gpu":"true","region":"eu"} — для селекторов
-	Capacity      int               // сколько задач параллельно может исполнять
+	Capabilities  []string
+	Capacity      int // сколько задач параллельно может исполнять
 	RunningTasks  int
 	LastHeartbeat time.Time
 	status        WorkerStatus

@@ -64,18 +64,31 @@ func (s *Scheduler) PushTask(job Job) {
 }
 
 // selectWorker — алгоритм подбора. Начните с простого, усложняйте по мере роста требований.
-func (s *Scheduler) selectWorker(workers []domain.WorkerNode) (string, error) {
+func (s *Scheduler) selectWorker(workers []domain.WorkerNode, taskType string) (string, error) {
 	if len(workers) == 0 {
 		return "", errors.New("empty workers")
 	}
 
-	sort.Slice(workers, func(i, j int) bool {
-		w1 := workers[i]
-		w2 := workers[j]
+	candidates := make([]domain.WorkerNode, 0, len(workers))
+	for _, worker := range workers {
+		for _, capability := range worker.Capabilities {
+			if capability == taskType {
+				candidates = append(candidates, worker)
 
-		// +1 в знаменателе — иначе свежий воркер с RunningTasks == 0 роняет
-		// планировщик паникой на делении на ноль
-		return w1.Capacity/(w1.RunningTasks+1) >= w2.Capacity/(w2.RunningTasks+1)
+				break
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no worker found for task type %s", taskType)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		w1 := candidates[i]
+		w2 := candidates[j]
+
+		return w1.RunningTasks/w1.Capacity >= w2.RunningTasks/w2.Capacity
 	})
 
 	return workers[0].ID, nil
@@ -90,14 +103,18 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 	workers := s.workerRegistry.AliveWorkers() // снимок текущих живых воркеров
 
 	for _, job := range readyJobs {
-		workerID, err := s.selectWorker(workers)
+		workerID, err := s.selectWorker(workers, job.Request.GetType())
 		if err != nil {
+			s.log.Error("failed to select worker", "worker", job.Request.GetType(), "err", err)
+
 			// нет подходящего воркера прямо сейчас (все заняты / нет с нужным label)
 			s.queue.Push(job) // вернуть в очередь, попробуем на следующем тике
 			continue
 		}
 
 		if err = s.commitAssignment(ctx, job, workerID); err != nil {
+			s.log.Error("failed to commit assignment", "worker", job.Request.GetType(), "err", err)
+
 			s.queue.Push(job) // Raft-команда не прошла (например, потеряли лидерство прямо сейчас) — вернуть
 			continue
 		}

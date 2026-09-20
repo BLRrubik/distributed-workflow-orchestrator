@@ -15,7 +15,8 @@ message RegisterRequest {
   string worker_id = 1;
   string address = 2;
   map<string, string> labels = 3;
-  int32 capacity = 4;
+  repeated string capabilities = 4;
+  int32 capacity = 5;
 }
 
 message RegisterResponse {

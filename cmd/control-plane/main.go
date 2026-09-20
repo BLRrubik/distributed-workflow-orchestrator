@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
@@ -34,7 +35,7 @@ func main() {
 
 	tasks := []domain.Task{
 		{
-			ID:        "build",
+			ID:        uuid.NewString(),
 			Name:      "build",
 			DependsOn: []string{},
 			Spec: domain.TaskSpec{
@@ -47,7 +48,7 @@ func main() {
 			Timeout: 10 * time.Second,
 		},
 		{
-			ID:        "test",
+			ID:        uuid.NewString(),
 			Name:      "test",
 			DependsOn: []string{"build"},
 			Spec: domain.TaskSpec{
@@ -60,7 +61,7 @@ func main() {
 			Timeout: 10 * time.Second,
 		},
 		{
-			ID:        "deploy",
+			ID:        uuid.NewString(),
 			Name:      "deploy",
 			DependsOn: []string{"test"},
 			Spec: domain.TaskSpec{
