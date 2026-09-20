@@ -27,6 +27,18 @@ func NewWorkflowEngine(log *logger.Logger, scheduler *scheduler.Scheduler) *Work
 	}
 }
 
+func (e *WorkflowEngine) GetWorkflow(workflowID string) (*domain.Workflow, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	workflow, ok := e.workflows[workflowID]
+	if !ok {
+		return nil, fmt.Errorf("workflow %s not found", workflowID)
+	}
+
+	return workflow, nil
+}
+
 // SubmitWorkflow вызывается из API. Валидирует DAG и сохраняет workflow.
 func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf *domain.Workflow) (string, error) {
 	e.mu.Lock()

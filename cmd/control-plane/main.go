@@ -6,12 +6,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/config"
@@ -32,53 +29,6 @@ func main() {
 	log := logger.New(logger.INFO, true)
 
 	ctx := context.Background()
-
-	tasks := []domain.Task{
-		{
-			ID:        uuid.NewString(),
-			Name:      "build",
-			DependsOn: []string{},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "build",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-		{
-			ID:        uuid.NewString(),
-			Name:      "test",
-			DependsOn: []string{"build"},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "test",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-		{
-			ID:        uuid.NewString(),
-			Name:      "deploy",
-			DependsOn: []string{"test"},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "deploy",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-	}
-
-	wf, err := domain.NewWorkflow("admin", "example-workflow", tasks)
-	if err != nil {
-		panic(err)
-	}
 
 	workerRegistry := orchestration.NewWorkerRegistry(log)
 
@@ -111,13 +61,6 @@ func main() {
 			log.Error("grpc server stopped", logger.Error(err))
 		}
 	}()
-
-	workflowID, err := eng.SubmitWorkflow(ctx, wf)
-	if err != nil {
-		panic(err)
-	}
-
-	log.Info("create workflow successfully", "workflowID", workflowID)
 
 	termChan := make(chan os.Signal, 1)
 

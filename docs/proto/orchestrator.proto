@@ -14,7 +14,7 @@ service OrchestratorAPI {
 
 // TaskDefinition — то, что клиент присылает при создании workflow (соответствует §10.5 YAML один в один)].
 message TaskDefinition {
-  string id = 1;
+  string name = 1;
   repeated string depends_on = 2;
   string type = 3;                    // "shell" | "http" | ... — см. §6.4, executor registry
   map<string, string> payload = 4;

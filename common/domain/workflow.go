@@ -25,6 +25,8 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 	for i := range tasks {
 		task := &tasks[i]
 
+		task.ID = uuid.NewString()
+
 		if _, ok := taskMapByName[task.Name]; ok {
 			return nil, fmt.Errorf("duplicate task name: %s", task.Name)
 		}
@@ -62,6 +64,14 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		wf.Tasks[i].WorkflowID = wf.ID
 		wf.Tasks[i].CreatedAt = time.Now()
 		wf.Tasks[i].UpdatedAt = time.Now()
+
+		if wf.Tasks[i].Timeout == 0 {
+			wf.Tasks[i].Timeout = 30 * time.Second
+		}
+
+		if wf.Tasks[i].RetryBackoff == 0 {
+			wf.Tasks[i].RetryBackoff = 200 * time.Millisecond
+		}
 	}
 
 	return wf, nil
