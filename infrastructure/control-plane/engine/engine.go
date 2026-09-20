@@ -149,20 +149,62 @@ func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow
 			e.log.Info("task ready", logger.String("task", readyTask.ID))
 		}
 
-		e.scheduler.PushTask(scheduler.Job{
-			ID:         readyTask.ID,
-			WorkflowID: readyTask.WorkflowID,
-			Request: &protogen.DispatchRequest{
-				TaskId:         readyTask.ID,
-				WorkflowId:     readyTask.WorkflowID,
-				Type:           readyTask.Spec.Type,
-				Payload:        readyTask.Spec.Payload,
-				TimeoutSeconds: int64(readyTask.Timeout.Seconds()),
-			},
-			OnDispatched: func(ctx context.Context, workerID string) {
-				e.OnTaskDispatched(ctx, readyTask, workerID)
-			},
-		})
+		e.pushJob(readyTask)
+	}
+}
+
+func (e *WorkflowEngine) pushJob(task *domain.Task) {
+	e.scheduler.PushTask(scheduler.Job{
+		ID:         task.ID,
+		WorkflowID: task.WorkflowID,
+		Request: &protogen.DispatchRequest{
+			TaskId:         task.ID,
+			WorkflowId:     task.WorkflowID,
+			Type:           task.Spec.Type,
+			Payload:        task.Spec.Payload,
+			TimeoutSeconds: int64(task.Timeout.Seconds()),
+		},
+		OnDispatched: func(ctx context.Context, workerID string) {
+			e.OnTaskDispatched(ctx, task, workerID)
+		},
+	})
+}
+
+// ReassignDeadWorkerTasks — хук на WorkerRegistry.OnWorkerDead: задачи, которые
+// висели на мёртвом воркере в DISPATCHED/RUNNING, возвращаются в READY и уходят
+// в scheduler заново. Не трогает Attempt/MaxRetries — воркер умер не по вине
+// задачи, а её собственный retry-бюджет остаётся нетронутым для реальных фейлов
+// исполнения. At-least-once: если воркер на самом деле жив (false positive по
+// heartbeat) и всё ещё выполняет задачу, возможен параллельный дубль-запуск —
+// осознанно принято, без fencing token.
+func (e *WorkflowEngine) ReassignDeadWorkerTasks(workerID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, wf := range e.workflows {
+		for _, task := range wf.Tasks {
+			if task.AssignedTo != workerID {
+				continue
+			}
+
+			status := task.GetStatus()
+			if status != domain.TaskDispatched && status != domain.TaskRunning {
+				continue
+			}
+
+			task.AssignedTo = ""
+
+			if !e.UpdateTaskStatus(context.Background(), task, domain.TaskReady) {
+				continue
+			}
+
+			e.log.Warn("task reassigned due to dead worker",
+				logger.String("task", task.ID),
+				logger.String("worker", workerID),
+			)
+
+			e.pushJob(task)
+		}
 	}
 }
 

@@ -86,14 +86,15 @@ func main() {
 
 	workerClient := client.NewWorkerClient(workerRegistry)
 
-	workerRegistry.OnWorkerDead(func(workerID string) {
-		workerClient.CloseConn(workerID)
-	})
-
 	taskScheduler := scheduler.New(workerRegistry, workerClient, log)
 	go taskScheduler.Run(ctx)
 
 	eng := engine.NewWorkflowEngine(log, taskScheduler)
+
+	workerRegistry.OnWorkerDead(func(workerID string) {
+		workerClient.CloseConn(workerID)
+		eng.ReassignDeadWorkerTasks(workerID)
+	})
 
 	srv := grpc.NewServer()
 	server.RegisterServer(srv, eng, log, workerRegistry)

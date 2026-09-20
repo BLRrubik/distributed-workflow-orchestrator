@@ -38,11 +38,13 @@ var taskStatusesGraph = [TaskStatusCount][TaskStatusCount]bool{
 		TaskSucceeded: true,
 		TaskFailed:    true,
 		TaskCancelled: true,
+		TaskReady:     true, // воркер умер — переотправка без учёта retry-бюджета
 	},
 	TaskRunning: {
 		TaskSucceeded: true,
 		TaskCancelled: true,
 		TaskFailed:    true,
+		TaskReady:     true, // воркер умер — переотправка без учёта retry-бюджета
 	},
 	TaskFailed: {
 		TaskRetrying: true,
