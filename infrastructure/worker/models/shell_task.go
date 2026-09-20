@@ -71,6 +71,8 @@ func (t *ShellTask) GetWaitDuration() time.Duration {
 	return retryBackoff
 }
 
+func (t *ShellTask) OnDone(error) {}
+
 func (t *ShellTask) sendStatus(ctx context.Context, status protogen.TaskReportStatus, taskResult *domain.TaskResult) {
 	result := &protogen.ResultRequest{
 		Status:     status,

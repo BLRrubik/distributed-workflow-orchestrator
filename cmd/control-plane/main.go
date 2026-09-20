@@ -47,7 +47,7 @@ func main() {
 	})
 
 	srv := grpc.NewServer()
-	server.RegisterServer(srv, eng, log, workerRegistry)
+	server.RegisterServer(srv, eng, log, workerRegistry, workerClient)
 
 	var listenConfig net.ListenConfig
 

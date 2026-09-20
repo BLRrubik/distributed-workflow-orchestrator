@@ -7,6 +7,8 @@ import (
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/engine"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -82,12 +84,33 @@ func (g *grpcServer) GetWorkflow(
 	return resp, nil
 }
 
+// CancelWorkflow — см. §4.1 docs/about.md. Пометка CANCELLED синхронна (engine),
+// уведомление воркеров о реально исполняющихся задачах — best-effort, не блокирует ответ.
 func (g *grpcServer) CancelWorkflow(
 	ctx context.Context,
 	request *protogen.CancelWorkflowRequest,
 ) (*protogen.CancelWorkflowResponse, error) {
-	//TODO implement me
-	panic("implement me")
+	running, err := g.engine.CancelWorkflow(ctx, request.GetWorkflowId())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to cancel workflow: %s", err.Error()))
+	}
+
+	for _, ref := range running {
+		go func(ref engine.RunningTaskRef) {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if _, err := g.workerClient.CancelTask(cancelCtx, ref.WorkerID, &protogen.CancelTaskRequest{TaskId: ref.TaskID}); err != nil {
+				g.log.Warn("failed to notify worker about cancellation",
+					logger.String("task", ref.TaskID),
+					logger.String("worker", ref.WorkerID),
+					logger.Error(err),
+				)
+			}
+		}(ref)
+	}
+
+	return &protogen.CancelWorkflowResponse{Accepted: true}, nil
 }
 
 func (g *grpcServer) StreamWorkflowEvents(

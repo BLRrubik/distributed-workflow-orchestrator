@@ -182,6 +182,44 @@ func (e *WorkflowEngine) pushJob(task *domain.Task) {
 	})
 }
 
+// RunningTaskRef — пара (задача, воркер), достаточная, чтобы разослать CancelTask.
+type RunningTaskRef struct {
+	TaskID   string
+	WorkerID string
+}
+
+// CancelWorkflow — см. §4.1 docs/about.md. Помечает CANCELLED все нетерминальные
+// задачи workflow синхронно (источник истины) и возвращает те из них, что были
+// DISPATCHED/RUNNING вместе с воркером, на котором исполнялись — вызывающая
+// сторона (grpc-обработчик) разошлёт им CancelTask отдельно, best-effort,
+// не блокируя этот вызов: WorkflowEngine сам по сети к воркерам не ходит.
+func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	wf, ok := e.workflows[workflowID]
+	if !ok {
+		return nil, fmt.Errorf("workflow not found %s", workflowID)
+	}
+
+	var running []RunningTaskRef
+	for _, task := range wf.Tasks {
+		if task.IsFinished() {
+			continue
+		}
+
+		if status := task.GetStatus(); status == domain.TaskDispatched || status == domain.TaskRunning {
+			running = append(running, RunningTaskRef{TaskID: task.ID, WorkerID: task.AssignedTo})
+		}
+
+		e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+	}
+
+	e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
+
+	return running, nil
+}
+
 // ReassignDeadWorkerTasks — хук на WorkerRegistry.OnWorkerDead: задачи, которые
 // висели на мёртвом воркере в DISPATCHED/RUNNING, возвращаются в READY и уходят
 // в scheduler заново. Не трогает Attempt/MaxRetries — воркер умер не по вине

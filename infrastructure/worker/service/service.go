@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,8 +24,6 @@ type WorkerService struct {
 	log               *logger.Logger
 	node              *domain.WorkerNode
 	suspended         atomic.Bool // выставляется при провале heartbeat, снимается успешной перерегистрацией
-
-	mu sync.Mutex
 }
 
 func NewWorkerService(
@@ -90,7 +87,7 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 		return errors.New("worker suspended: lost connection to control-plane")
 	}
 
-	key := inFlightKey(req.GetWorkflowId(), req.GetTaskId())
+	key := req.GetTaskId() // TaskID генерируется control-plane (uuid), глобально уникален
 
 	if !ws.unique.Add(key) {
 		ws.log.Info("task already in flight, skipping duplicate dispatch",
@@ -122,7 +119,19 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 		ws.log,
 	)
 
-	if ok := ws.workerPool.TrySubmit(&dedupTask{inner: task, key: key, clear: ws.unique.Remove}); !ok {
+	tracked := &trackedTask{
+		inner: task,
+		setCancel: func(cancel context.CancelFunc) {
+			ws.unique.SetCancel(key, cancel)
+		},
+		onDone: func(err error) {
+			if err == nil {
+				ws.unique.Remove(key)
+			}
+		},
+	}
+
+	if ok := ws.workerPool.TrySubmit(tracked); !ok {
 		ws.unique.Remove(key)
 
 		return errors.New("worker pool is full")
@@ -131,31 +140,11 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 	return nil
 }
 
-func inFlightKey(workflowID, taskID string) string {
-	return workflowID + "/" + taskID
-}
-
-// dedupTask снимает ключ из inFlight только при успехе. WorkerPool на ошибке
-// перекладывает ТОТ ЖЕ Job в retry (см. moveToRetry) — снимать ключ на каждой
-// попытке нельзя: в окне между провалом и подхватом ретраем туда мог бы
-// проскочить дубликат-диспатч и создать вторую параллельную копию задачи.
-type dedupTask struct {
-	inner wp.Task
-	key   string
-	clear func(string)
-}
-
-func (d *dedupTask) Do(ctx context.Context) error {
-	err := d.inner.Do(ctx)
-	if err == nil {
-		d.clear(d.key)
-	}
-
-	return err //nolint:wrapcheck // прозрачная обёртка: инкапсулированная задача уже сама оборачивает свои ошибки
-}
-
-func (d *dedupTask) GetWaitDuration() time.Duration {
-	return d.inner.GetWaitDuration()
+// CancelTask — обработчик WorkerRPC.CancelTask (best-effort остановка). false —
+// не ошибка, а нормальный исход гонки: задача уже успела завершиться сама
+// или никогда не исполнялась на этом воркере.
+func (ws *WorkerService) CancelTask(taskID string) bool {
+	return ws.unique.Cancel(taskID)
 }
 
 func (ws *WorkerService) heartbeatLoop(ctx context.Context) {
