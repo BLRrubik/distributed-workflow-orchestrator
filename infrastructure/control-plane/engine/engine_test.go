@@ -29,7 +29,7 @@ func newTestEngine(t *testing.T) *WorkflowEngine {
 	workerClient := client.NewWorkerClient(registry)
 	sched := scheduler.New(registry, workerClient, log)
 
-	return NewWorkflowEngine(log, sched)
+	return NewWorkflowEngine(log, sched, workerClient)
 }
 
 func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {

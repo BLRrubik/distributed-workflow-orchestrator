@@ -25,7 +25,9 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 	for i := range tasks {
 		task := &tasks[i]
 
-		task.ID = uuid.NewString()
+		if task.ID == "" {
+			task.ID = uuid.NewString()
+		}
 
 		if _, ok := taskMapByName[task.Name]; ok {
 			return nil, fmt.Errorf("duplicate task name: %s", task.Name)

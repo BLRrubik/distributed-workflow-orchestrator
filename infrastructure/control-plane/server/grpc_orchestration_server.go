@@ -7,8 +7,6 @@ import (
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/engine"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,7 +38,7 @@ func (g *grpcServer) SubmitWorkflow(
 
 	id, err := g.engine.SubmitWorkflow(ctx, wf)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to submit workflow: %w", err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to submit workflow: %s", err.Error()))
 	}
 
 	return &protogen.SubmitWorkflowResponse{
@@ -84,33 +82,31 @@ func (g *grpcServer) GetWorkflow(
 	return resp, nil
 }
 
-// CancelWorkflow — см. §4.1 docs/about.md. Пометка CANCELLED синхронна (engine),
-// уведомление воркеров о реально исполняющихся задачах — best-effort, не блокирует ответ.
+// CancelWorkflow — см. §4.1/§4.3 docs/about.md. Вся бизнес-логика (пометка
+// CANCELLED + best-effort уведомление воркеров, сгруппированное в батчи) живёт
+// в engine — обработчик его не дублирует и сам по сети к воркерам не ходит.
 func (g *grpcServer) CancelWorkflow(
 	ctx context.Context,
 	request *protogen.CancelWorkflowRequest,
 ) (*protogen.CancelWorkflowResponse, error) {
-	running, err := g.engine.CancelWorkflow(ctx, request.GetWorkflowId())
-	if err != nil {
+	if err := g.engine.CancelWorkflow(ctx, request.GetWorkflowId()); err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to cancel workflow: %s", err.Error()))
 	}
 
-	for _, ref := range running {
-		go func(ref engine.RunningTaskRef) {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	return &protogen.CancelWorkflowResponse{Accepted: true}, nil
+}
 
-			if _, err := g.workerClient.CancelTask(cancelCtx, ref.WorkerID, &protogen.CancelTaskRequest{TaskId: ref.TaskID}); err != nil {
-				g.log.Warn("failed to notify worker about cancellation",
-					logger.String("task", ref.TaskID),
-					logger.String("worker", ref.WorkerID),
-					logger.Error(err),
-				)
-			}
-		}(ref)
+// CancelTask — см. §4.4 docs/about.md. Отменяет одну задачу и каскадом всё,
+// что от неё зависит; уведомление воркеров — тоже внутри engine.
+func (g *grpcServer) CancelTask(
+	ctx context.Context,
+	request *protogen.CancelTaskRequest,
+) (*protogen.CancelTaskResponse, error) {
+	if err := g.engine.CancelTask(ctx, request.GetTaskId()); err != nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to cancel task: %s", err.Error()))
 	}
 
-	return &protogen.CancelWorkflowResponse{Accepted: true}, nil
+	return &protogen.CancelTaskResponse{Accepted: true}, nil
 }
 
 func (g *grpcServer) StreamWorkflowEvents(

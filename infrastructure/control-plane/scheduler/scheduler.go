@@ -88,10 +88,17 @@ func (s *Scheduler) selectWorker(workers []domain.WorkerNode, taskType string) (
 		w1 := candidates[i]
 		w2 := candidates[j]
 
-		return w1.RunningTasks/w1.Capacity >= w2.RunningTasks/w2.Capacity
+		load1 := float64(w1.RunningTasks) / float64(w1.Capacity)
+		load2 := float64(w2.RunningTasks) / float64(w2.Capacity)
+
+		if load1 != load2 {
+			return load1 < load2 // менее загруженный — первым
+		}
+
+		return w1.Capacity > w2.Capacity // при равной загрузке — больше свободной ёмкости
 	})
 
-	return workers[0].ID, nil
+	return candidates[0].ID, nil
 }
 
 func (s *Scheduler) assignOnce(ctx context.Context) {

@@ -158,10 +158,14 @@ const (
 
 // Workflow — DAG задач
 type Workflow struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Tasks     map[string]*Task // ключ — Task.ID
+	ID          string
+	TenantID    string
+	Name        string
+	Tasks       map[string]*Task // ключ — Task.ID
+	ReverseDeps map[string][]string // taskID -> ID задач, которые ОТ НЕГО зависят (обратные рёбра DependsOn).
+	                                  // Строится один раз при создании (§4.1), нужен для каскадной отмены —
+	                                  // без него пришлось бы каждый раз сканировать все задачи в поисках
+	                                  // "у кого DependsOn содержит этот ID".
 	Status    WorkflowStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -471,18 +475,23 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow)
 //
 // ВАЖНО про идемпотентность: первым делом проверьте текущий task.Status. Если он уже
 // терминальный (SUCCEEDED/FAILED/CANCELLED) — результат опоздал (например, воркер успел
-// прислать ReportResult ровно в момент CancelWorkflow, §4.1, или после переназначения
+// прислать ReportResult ровно в момент CancelWorkflow/CancelTask, §4.3/§4.4, или после переназначения
 // по смерти воркера, §6.3) и должен быть тихо проигнорирован: залогировать и вернуть nil,
 // а не применять статус повторно и не считать это ошибкой — вызывающая сторона (воркер)
 // не обязана знать, что задача уже неактуальна.
 func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error
 
-// CancelWorkflow — см. §4.1. Помечает CANCELLED все нетерминальные задачи workflow и
+// CancelWorkflow — см. §4.3. Помечает CANCELLED все нетерминальные задачи workflow и
 // возвращает те из них, что были DISPATCHED/RUNNING (вместе с воркером, на котором
 // исполнялись) — чтобы вызывающая сторона могла разослать им CancelTask (§6.2).
 // WorkflowEngine сам НЕ ходит по сети к воркерам — он не знает про WorkerClient (§6.1),
 // это ответственность того, кто его вызывает (grpcserver-обработчик OrchestratorAPI.CancelWorkflow).
 func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error)
+
+// CancelTask — см. §4.4. Отменяет ОДНУ задачу (и каскадом — всё, что от неё зависит),
+// не трогая независимые ветки того же workflow. Возвращает RunningTaskRef, если задача
+// была DISPATCHED/RUNNING (nil, если она ещё не запускалась — отменять на воркере нечего).
+func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) (*RunningTaskRef, error)
 
 // RunningTaskRef — пара (задача, воркер), достаточная, чтобы разослать CancelTask
 type RunningTaskRef struct {
@@ -509,14 +518,143 @@ func (e *WorkflowEngine) ReassignTask(ctx context.Context, taskID string) error
 func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string // ID готовых к запуску задач
 ```
 
-### 4.1 Отмена workflow
+### 4.1 Каскадная отмена — что происходит с графом, когда задача падает или её отменяют
+
+Вспомните граф из §16.5/ранних примеров:
+
+```
+build ──> test ──> deploy-api
+                └─> deploy-worker
+
+lintA ──> lintB   (независимая ветка, не связана с build)
+```
+
+Если `test` окончательно `FAILED` (после исчерпания `MaxRetries`, §5.2) или кто-то явно отменил именно `test` — `deploy-api`/`deploy-worker` **никогда не смогут стать `READY`** (их зависимость не `SUCCEEDED`). Их нельзя оставить вечно висеть в `PENDING` — нужно явно перевести в `CANCELLED`. При этом `lintA`/`lintB` — независимая ветка, её это не должно останавливать.
+
+**Обратный индекс `ReverseDeps`** (§2) строится один раз при создании workflow, рядом с валидацией DAG:
+
+```go
+func buildReverseDeps(tasks map[string]*domain.Task) map[string][]string {
+	reverse := make(map[string][]string)
+	for _, t := range tasks {
+		for _, depID := range t.DependsOn {
+			reverse[depID] = append(reverse[depID], t.ID) // "от depID зависит t.ID"
+		}
+	}
+	return reverse
+}
+```
+
+**`cancelDownstream`** — BFS по обратным рёбрам, общий механизм и для падения задачи, и для ручной отмены одной задачи (§4.4):
+
+```go
+// cancelDownstream рекурсивно отменяет ещё не запущенные задачи, зависящие (прямо или
+// транзитивно) от rootID — без этого их зависимости никогда не станут SUCCEEDED, и workflow
+// никогда не дойдёт до терминального состояния, а зависнет в RUNNING навсегда.
+func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) {
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+
+		for _, dependentID := range wf.ReverseDeps[id] {
+			task := wf.Tasks[dependentID]
+			if task.Status == domain.TaskSucceeded || task.Status == domain.TaskFailed || task.Status == domain.TaskCancelled {
+				continue // уже терминальна (в т.ч. уже отменена в этом же обходе) — не трогаем
+			}
+			e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+			queue = append(queue, dependentID) // и её "потомков" тоже каскадом
+		}
+	}
+}
+```
+
+Вызывается из `OnTaskCompleted`, когда задача окончательно `FAILED` (после исчерпания ретраев):
+
+```go
+func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error {
+	// ... проверка идемпотентности из блока выше ...
+
+	task.Attempt++
+	if result.ExitCode != 0 && task.Attempt < task.MaxRetries {
+		return nil // retryQueue (§5.2) сам вернёт задачу в READY после RetryBackoff
+	}
+
+	newStatus := domain.TaskSucceeded
+	if result.ExitCode != 0 {
+		newStatus = domain.TaskFailed
+	}
+	e.UpdateTaskStatus(ctx, task, newStatus)
+
+	if newStatus == domain.TaskFailed {
+		e.cancelDownstream(ctx, wf, task.ID)
+	} else {
+		newlyReady := e.recomputeReadyTasks(wf)
+		for _, id := range newlyReady {
+			readyTask := wf.Tasks[id]
+			e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady)
+			e.pushToScheduler(readyTask)
+		}
+	}
+
+	e.finalizeWorkflowIfDone(ctx, wf) // §4.2
+	return nil
+}
+```
+
+### 4.2 Финализация workflow
+
+```go
+// finalizeWorkflowIfDone проверяет, завершены ли все задачи графа, и переводит workflow
+// в терминальный статус. НЕ вызывайте это сразу после падения одной задачи — дождитесь,
+// пока ВСЕ ветки (включая независимые, не задетые каскадом) дойдут до терминального статуса,
+// иначе независимая lintA/lintB может быть прервана раньше времени.
+func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.Context, wf *domain.Workflow) {
+	hasActive, hasFailed, hasCancelled := false, false, false
+
+	for _, t := range wf.Tasks {
+		switch t.Status {
+		case domain.TaskPending, domain.TaskReady, domain.TaskDispatched, domain.TaskRunning, domain.TaskRetrying:
+			hasActive = true
+		case domain.TaskFailed:
+			hasFailed = true
+		case domain.TaskCancelled:
+			hasCancelled = true
+		}
+	}
+	if hasActive {
+		return // есть ещё незавершённые ветки — рано подводить итог
+	}
+
+	switch {
+	case hasFailed:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowFailed) // реальный сбой важнее отмены — приоритет
+	case hasCancelled:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
+	default:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowSucceeded)
+	}
+}
+```
+
+**Опционально — политика fail-fast.** Если вместо "независимые ветки доходят до конца" нужно поведение "упала любая задача — сразу остановить вообще всё" (некоторым CI/CD pipeline это важнее, чем сэкономленное время на догоне независимых веток) — заведите явное поле, а не делайте это поведением по умолчанию:
+
+```go
+type Workflow struct {
+	// ...
+	FailFast bool // если true — при первом TaskFailed все ещё PENDING/READY задачи, включая
+	              // независимые, тоже -> CANCELLED (не только вниз по графу от упавшей)
+}
+```
+
+### 4.3 Отмена всего workflow
 
 Два независимых действия, оба обязательны:
 
 1. **Пометить состояние в control-plane** — это источник истины, происходит сразу и синхронно через Raft. Пока это не сделано, `recomputeReadyTasks`/`Scheduler` продолжат считать отменённые задачи живыми.
 2. **Уведомить воркеров, у кого сейчас реально исполняются (`DISPATCHED`/`RUNNING`) задачи этого workflow** — иначе воркер продолжит жечь CPU/память на процесс, результат которого уже никому не нужен, до истечения собственного `Timeout` задачи.
 
-Это **не блокирующая друг друга** пара действий — control-plane не ждёт подтверждения от воркера, что тот реально остановился, прежде чем считать задачу `CANCELLED`. Решение оптимистичное: control-plane сразу коммитит `CANCELLED` (шаг 1), а уведомление воркера (шаг 2) — best-effort сайд-эффект. Раз возможна гонка (воркер уже отправил `ReportResult` ровно тогда же, когда пришла отмена) — идемпотентность закрывается проверкой терминального статуса в `OnTaskCompleted` (см. выше), а не ожиданием ack от воркера.
+Это **не блокирующая друг друга** пара действий — control-plane не ждёт подтверждения от воркера, что тот реально остановился, прежде чем считать задачу `CANCELLED`. Решение оптимистичное: control-plane сразу коммитит `CANCELLED` (шаг 1), а уведомление воркера (шаг 2) — best-effort сайд-эффект. Раз возможна гонка (воркер уже отправил `ReportResult` ровно тогда же, когда пришла отмена) — идемпотентность закрывается проверкой терминального статуса в `OnTaskCompleted` (§4), а не ожиданием ack от воркера.
 
 ```go
 func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error) {
@@ -550,10 +688,72 @@ func (s *Server) CancelWorkflow(ctx context.Context, req *orchestratorpb.CancelW
 	if err != nil {
 		return nil, err
 	}
-	for _, ref := range running {
+	notifyWorkersOfCancellation(s, running) // общий хелпер, см. §4.4 — используется и здесь, и там
+	return &orchestratorpb.CancelWorkflowResponse{Accepted: true}, nil
+}
+```
+
+### 4.4 Отмена отдельной задачи
+
+Тот же паттерн (§4.3), просто на одну задачу — плюс каскад на её зависимых через `cancelDownstream` (§4.1). Это то, чего **нет** у `CancelWorkflow` (там каскад не нужен — отменяются вообще все нетерминальные задачи разом):
+
+```go
+func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) (*RunningTaskRef, error) {
+	task, ok := e.taskIndex[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task not found %s", taskID)
+	}
+	if task.Status == domain.TaskSucceeded || task.Status == domain.TaskFailed || task.Status == domain.TaskCancelled {
+		return nil, fmt.Errorf("task %s already terminal: %s", taskID, task.Status) // не идемпотентно молчим — это
+		                                                                             // явный вызов пользователя, а не
+		                                                                             // фоновый сигнал от воркера
+	}
+
+	var ref *RunningTaskRef
+	if task.Status == domain.TaskDispatched || task.Status == domain.TaskRunning {
+		ref = &RunningTaskRef{TaskID: task.ID, WorkerID: task.AssignedTo}
+	}
+
+	e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+	wf := e.workflows[task.WorkflowID]
+	e.cancelDownstream(ctx, wf, task.ID) // §4.1 — та же самая функция, что и при падении задачи
+	e.finalizeWorkflowIfDone(ctx, wf)    // §4.2 — вдруг это была последняя активная ветка
+
+	return ref, nil
+}
+```
+
+```protobuf
+// docs/proto/orchestrator.proto — дополнение к service OrchestratorAPI (§10.1)
+rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+message CancelTaskRequest {
+  string task_id = 1;
+}
+message CancelTaskResponse {
+  bool accepted = 1;
+}
+```
+
+**Не путайте с `WorkerRPC.CancelTask` (§6.2)** — это два разных RPC с одинаковым именем в разных proto-сервисах (никакого конфликта в сгенерированном коде, они в разных пакетах `orchestratorpb`/`workerpb`): один — клиент → control-plane ("отмени задачу X"), другой — control-plane → воркер ("останови процесс задачи X"). `OrchestratorAPI.CancelTask` **вызывает** `WorkerRPC.CancelTask` внутри себя, если задача была активна:
+
+```go
+func (s *Server) CancelTask(ctx context.Context, req *orchestratorpb.CancelTaskRequest) (*orchestratorpb.CancelTaskResponse, error) {
+	ref, err := s.engine.CancelTask(ctx, req.TaskId)
+	if err != nil {
+		return nil, err
+	}
+	if ref != nil {
+		notifyWorkersOfCancellation(s, []engine.RunningTaskRef{*ref}) // общий хелпер с §4.3
+	}
+	return &orchestratorpb.CancelTaskResponse{Accepted: true}, nil
+}
+
+// notifyWorkersOfCancellation — общий best-effort рассыльщик WorkerRPC.CancelTask (§6.2),
+// переиспользуется и CancelWorkflow (§4.3), и CancelTask (это место)
+func notifyWorkersOfCancellation(s *Server, refs []engine.RunningTaskRef) {
+	for _, ref := range refs {
 		go func(ref engine.RunningTaskRef) {
-			// best-effort, не блокирует ответ клиенту — воркер может быть недоступен,
-			// в этом случае процесс всё равно рано или поздно упрётся в свой Timeout (§2)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if _, err := s.workerClient.CancelTask(ctx, ref.WorkerID, ref.TaskID); err != nil {
@@ -561,7 +761,6 @@ func (s *Server) CancelWorkflow(ctx context.Context, req *orchestratorpb.CancelW
 			}
 		}(ref)
 	}
-	return &orchestratorpb.CancelWorkflowResponse{Accepted: true}, nil
 }
 ```
 
@@ -876,7 +1075,7 @@ service ClusterService {
 // Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
 service WorkerRPC {
   rpc Dispatch(DispatchRequest) returns (DispatchResponse);
-  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse); // §4.1 — best-effort остановка исполнения
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse); // §4.3/§4.4 — best-effort остановка исполнения
 }
 
 message RegisterRequest {
@@ -935,7 +1134,7 @@ message ResultResponse {
 2. Воркер каждые N секунд вызывает `ClusterService.Heartbeat` → `WorkerRegistry.Heartbeat` обновляет `LastHeartbeat` и сбрасывает health-check таймер (§6.3).
 3. Control-plane (лидер) решил, что задача X идёт воркеру Y → сам, как **клиент**, вызывает `WorkerRPC.Dispatch` по адресу воркера Y (тот самый `Address` из `RegisterRequest`) → получает `DispatchResponse{accepted: true}`.
 4. Когда задача реально завершилась — воркер вызывает `ClusterService.ReportResult` на control-plane с результатом.
-5. Если workflow отменили (§4.1) — control-plane, тоже как **клиент**, вызывает `WorkerRPC.CancelTask` на воркере, где задача сейчас исполняется — best-effort, не блокирует ответ клиенту на `CancelWorkflow`.
+5. Если workflow или отдельная задача отменены (§4.3/§4.4) — control-plane, тоже как **клиент**, вызывает `WorkerRPC.CancelTask` на воркере, где задача сейчас исполняется — best-effort, не блокирует ответ клиенту на `CancelWorkflow`.
 
 ### 6.3 Health checking (failure detection)
 
@@ -1054,7 +1253,7 @@ registry.Register("http", &executor.HTTPExecutor{client: http.DefaultClient})
 
 Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
 
-**Отмена задачи (§4.1).** Чтобы `CancelTask` реально мог остановить исполнение, а не просто вернуть "ок, записал", воркер должен хранить `context.CancelFunc` каждой исполняющейся задачи — не только `context.WithTimeout` для авто-остановки по таймауту, но и возможность остановить её **раньше**, по внешней команде:
+**Отмена задачи (§4.3/§4.4).** Чтобы `CancelTask` реально мог остановить исполнение, а не просто вернуть "ок, записал", воркер должен хранить `context.CancelFunc` каждой исполняющейся задачи — не только `context.WithTimeout` для авто-остановки по таймауту, но и возможность остановить её **раньше**, по внешней команде:
 
 ```go
 type Worker struct {
@@ -1090,7 +1289,7 @@ func (w *Worker) CancelTask(ctx context.Context, req *workerpb.CancelTaskRequest
 
 	if !ok {
 		// задачи уже нет — либо успела завершиться сама, либо никогда не исполнялась здесь.
-		// Это нормальный исход гонки (§4.1), не ошибка.
+		// Это нормальный исход гонки (§4.3/§4.4), не ошибка.
 		return &workerpb.CancelTaskResponse{Cancelled: false}, nil
 	}
 
@@ -1267,7 +1466,7 @@ message WorkflowStatusResponse {
   repeated TaskStatusInfo tasks = 4;
 }
 
-// Семантика отмены — см. §4.1: пометка CANCELLED синхронна через Raft, уведомление
+// Семантика отмены — см. §4.3: пометка CANCELLED синхронна через Raft, уведомление
 // воркеров о реально исполняющихся задачах — best-effort сайд-эффект, не блокирует ответ.
 message CancelWorkflowRequest {
   string workflow_id = 1;
@@ -1353,7 +1552,8 @@ func notLeaderError(leaderAddr string) error {
 ```text
 orc submit workflow.yaml
 orc get workflow <id>
-orc cancel workflow <id>          # §4.1 — пометка CANCELLED + best-effort остановка воркеров
+orc cancel workflow <id>          # §4.3 — пометка CANCELLED + best-effort остановка воркеров
+orc cancel task <id>              # §4.4 — то же самое, но для одной задачи + каскад на зависимые
 orc watch workflow <id>          # стриминг событий
 orc cluster status                # кто лидер, кто follower, кто down
 orc worker list
@@ -1388,16 +1588,16 @@ CLI (orc)          ──────────────gRPC (LeaderAwareCl
 ```yaml
 name: build-and-deploy
 tasks:
-   - id: build
-     command: {type: shell, cmd: "go build ./..."}
-   - id: test
-     depends_on: [build]
-     command: {type: shell, cmd: "go test ./..."}
-   - id: deploy
-     depends_on: [test]
-     command: {type: http, url: "https://deploy.internal/api", method: POST}
-     max_retries: 3
-     timeout: 60s
+  - id: build
+    command: {type: shell, cmd: "go build ./..."}
+  - id: test
+    depends_on: [build]
+    command: {type: shell, cmd: "go test ./..."}
+  - id: deploy
+    depends_on: [test]
+    command: {type: http, url: "https://deploy.internal/api", method: POST}
+    max_retries: 3
+    timeout: 60s
 ```
 
 ---
@@ -1572,12 +1772,12 @@ infrastructure/apigateway     ──┘
 
 ```go
 type TaskResult struct {
-ExitCode int
-Stdout   string
-Stderr   string
-Error    string
-Duration time.Duration
-Output   map[string]any // структурированный результат, доступный зависимым задачам
+	ExitCode int
+	Stdout   string
+	Stderr   string
+	Error    string
+	Duration time.Duration
+	Output   map[string]any // структурированный результат, доступный зависимым задачам
 }
 ```
 
@@ -1585,13 +1785,13 @@ YAML резолвит выражения вида `{{tasks.<id>.output.<key>}}` 
 
 ```yaml
 tasks:
-   - id: get-price
-     type: http
-     payload: {url: "https://api.supplier.com/price"}
-   - id: notify
-     depends_on: [get-price]
-     type: slack-notify
-     payload: {message: "Цена: {{tasks.get-price.output.price}}"}
+  - id: get-price
+    type: http
+    payload: {url: "https://api.supplier.com/price"}
+  - id: notify
+    depends_on: [get-price]
+    type: slack-notify
+    payload: {message: "Цена: {{tasks.get-price.output.price}}"}
 ```
 
 **Не пишите свой парсер выражений с нуля** — возьмите готовую библиотеку (`expr-lang/expr` или `google/cel-go`), это отдельный, рискованный по срокам проект, если делать с нуля.
@@ -1615,25 +1815,25 @@ tasks:
 
 ```protobuf
 // docs/proto/orchestrator.proto — дополнение к service OrchestratorAPI (§10.1)
-        rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
-        rpc RejectTask(RejectTaskRequest) returns (RejectTaskResponse);
+rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
+rpc RejectTask(RejectTaskRequest) returns (RejectTaskResponse);
 
 message ApproveTaskRequest {
-   string task_id = 1;
-   string approved_by = 2; // из контекста аутентификации (§9.2) или явно, если approver отличается от вызывающего
-   string comment = 3;
+  string task_id = 1;
+  string approved_by = 2; // из контекста аутентификации (§9.2) или явно, если approver отличается от вызывающего
+  string comment = 3;
 }
 message ApproveTaskResponse {
-   bool accepted = 1;
+  bool accepted = 1;
 }
 
 message RejectTaskRequest {
-   string task_id = 1;
-   string rejected_by = 2;
-   string reason = 3;
+  string task_id = 1;
+  string rejected_by = 2;
+  string reason = 3;
 }
 message RejectTaskResponse {
-   bool accepted = 1;
+  bool accepted = 1;
 }
 ```
 

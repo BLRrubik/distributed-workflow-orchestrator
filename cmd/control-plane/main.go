@@ -39,7 +39,7 @@ func main() {
 	taskScheduler := scheduler.New(workerRegistry, workerClient, log)
 	go taskScheduler.Run(ctx)
 
-	eng := engine.NewWorkflowEngine(log, taskScheduler)
+	eng := engine.NewWorkflowEngine(log, taskScheduler, workerClient)
 
 	workerRegistry.OnWorkerDead(func(workerID string) {
 		workerClient.CloseConn(workerID)
@@ -47,7 +47,7 @@ func main() {
 	})
 
 	srv := grpc.NewServer()
-	server.RegisterServer(srv, eng, log, workerRegistry, workerClient)
+	server.RegisterServer(srv, eng, log, workerRegistry)
 
 	var listenConfig net.ListenConfig
 

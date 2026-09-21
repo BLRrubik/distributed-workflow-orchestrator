@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
@@ -11,19 +12,28 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
 )
 
+// WorkerNotifier — то немногое, что engine нужно от сети, чтобы остановить
+// реально исполняющиеся задачи на воркере при отмене. *client.GRPCWorkerClient
+// удовлетворяет этому интерфейсу неявно.
+type WorkerNotifier interface {
+	CancelTasks(ctx context.Context, workerID string, taskIDs []string) (*protogen.CancelTasksResponse, error)
+}
+
 type WorkflowEngine struct {
-	workflows map[string]*domain.Workflow
-	scheduler *scheduler.Scheduler
-	log       *logger.Logger
+	workflows      map[string]*domain.Workflow
+	scheduler      *scheduler.Scheduler
+	workerNotifier WorkerNotifier
+	log            *logger.Logger
 
 	mu sync.RWMutex
 }
 
-func NewWorkflowEngine(log *logger.Logger, scheduler *scheduler.Scheduler) *WorkflowEngine {
+func NewWorkflowEngine(log *logger.Logger, scheduler *scheduler.Scheduler, workerNotifier WorkerNotifier) *WorkflowEngine {
 	return &WorkflowEngine{
-		workflows: make(map[string]*domain.Workflow),
-		scheduler: scheduler,
-		log:       log,
+		workflows:      make(map[string]*domain.Workflow),
+		scheduler:      scheduler,
+		workerNotifier: workerNotifier,
+		log:            log,
 	}
 }
 
@@ -189,17 +199,17 @@ type RunningTaskRef struct {
 }
 
 // CancelWorkflow — см. §4.1 docs/about.md. Помечает CANCELLED все нетерминальные
-// задачи workflow синхронно (источник истины) и возвращает те из них, что были
-// DISPATCHED/RUNNING вместе с воркером, на котором исполнялись — вызывающая
-// сторона (grpc-обработчик) разошлёт им CancelTask отдельно, best-effort,
-// не блокируя этот вызов: WorkflowEngine сам по сети к воркерам не ходит.
-func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error) {
+// задачи workflow синхронно (источник истины), затем best-effort уведомляет
+// воркеров, у кого реально исполнялись (DISPATCHED/RUNNING) задачи этого
+// workflow — сгруппировав по воркеру и отправив каждому один батч-запрос,
+// а не по вызову на задачу. Уведомление не блокирует ответ этого метода.
+func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	wf, ok := e.workflows[workflowID]
 	if !ok {
-		return nil, fmt.Errorf("workflow not found %s", workflowID)
+		return fmt.Errorf("workflow not found %s", workflowID)
 	}
 
 	var running []RunningTaskRef
@@ -217,7 +227,84 @@ func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 
 	e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
 
-	return running, nil
+	e.notifyWorkersOfCancellation(running)
+
+	return nil
+}
+
+// CancelTask — см. §4.4 docs/about.md. Отменяет ОДНУ задачу (и каскадом — всё,
+// что от неё зависит), не трогая независимые ветки того же workflow.
+func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) error {
+	e.mu.Lock()
+
+	wf, task, ok := e.findTask(taskID)
+	if !ok {
+		e.mu.Unlock()
+
+		return fmt.Errorf("task not found %s", taskID)
+	}
+
+	if task.IsFinished() {
+		e.mu.Unlock()
+
+		return fmt.Errorf("task %s already terminal: %s", taskID, task.GetStatus())
+	}
+
+	var running []RunningTaskRef
+	if status := task.GetStatus(); status == domain.TaskDispatched || status == domain.TaskRunning {
+		running = append(running, RunningTaskRef{TaskID: task.ID, WorkerID: task.AssignedTo})
+	}
+
+	e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+	running = append(running, e.cancelDownstream(ctx, wf, task.ID)...)
+	e.finalizeWorkflowIfDone(ctx, wf)
+
+	e.mu.Unlock()
+
+	e.notifyWorkersOfCancellation(running)
+
+	return nil
+}
+
+// findTask ищет задачу по ID среди всех workflow. O(число workflow * задач в
+// нём) — на этом этапе (до Раздела 5, до FSM) engine не держит глобальный
+// индекс taskID -> workflow, а число активных workflow невелико.
+func (e *WorkflowEngine) findTask(taskID string) (*domain.Workflow, *domain.Task, bool) {
+	for _, wf := range e.workflows {
+		if task, ok := wf.Tasks[taskID]; ok {
+			return wf, task, true
+		}
+	}
+
+	return nil, nil, false
+}
+
+// notifyWorkersOfCancellation — общий best-effort рассыльщик WorkerRPC.CancelTasks,
+// сгруппированный по воркеру: каждому воркеру уходит один батч-запрос со всеми
+// его задачами, а не по вызову на задачу.
+func (e *WorkflowEngine) notifyWorkersOfCancellation(refs []RunningTaskRef) {
+	if len(refs) == 0 || e.workerNotifier == nil {
+		return
+	}
+
+	byWorker := make(map[string][]string)
+	for _, ref := range refs {
+		byWorker[ref.WorkerID] = append(byWorker[ref.WorkerID], ref.TaskID)
+	}
+
+	for workerID, taskIDs := range byWorker {
+		go func(workerID string, taskIDs []string) {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if _, err := e.workerNotifier.CancelTasks(cancelCtx, workerID, taskIDs); err != nil {
+				e.log.Warn("failed to notify worker about cancellation",
+					logger.String("worker", workerID),
+					logger.Error(err),
+				)
+			}
+		}(workerID, taskIDs)
+	}
 }
 
 // ReassignDeadWorkerTasks — хук на WorkerRegistry.OnWorkerDead: задачи, которые
@@ -261,8 +348,10 @@ func (e *WorkflowEngine) ReassignDeadWorkerTasks(workerID string) {
 // cancelDownstream рекурсивно отменяет ещё не запущенные задачи, зависящие
 // (прямо или транзитивно) от упавшей rootID — без этого их AllDepsSucceeded
 // никогда не станет true, а значит workflow никогда не дойдёт до AllTasksFinished
-// и зависнет в RUNNING навсегда.
-func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) {
+// и зависнет в RUNNING навсегда. Возвращает те из отменённых, что были
+// DISPATCHED/RUNNING — вызывающая сторона уведомит их воркеров.
+func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) []RunningTaskRef {
+	var running []RunningTaskRef
 	queue := []string{rootID}
 
 	for len(queue) > 0 {
@@ -279,6 +368,10 @@ func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workfl
 					continue
 				}
 
+				if status := t.GetStatus(); status == domain.TaskDispatched || status == domain.TaskRunning {
+					running = append(running, RunningTaskRef{TaskID: t.ID, WorkerID: t.AssignedTo})
+				}
+
 				if e.UpdateTaskStatus(ctx, t, domain.TaskCancelled) {
 					e.log.Info("task cancelled due to failed dependency",
 						logger.String("task", t.ID),
@@ -292,6 +385,8 @@ func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workfl
 			}
 		}
 	}
+
+	return running
 }
 
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач.

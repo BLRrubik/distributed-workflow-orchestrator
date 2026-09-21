@@ -9,6 +9,7 @@ service OrchestratorAPI {
   rpc SubmitWorkflow(SubmitWorkflowRequest) returns (SubmitWorkflowResponse);
   rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowStatusResponse);
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
   rpc StreamWorkflowEvents(GetWorkflowRequest) returns (stream WorkflowEvent); // для CLI/Gateway: live-статус
 }
 
@@ -59,6 +60,13 @@ message CancelWorkflowRequest {
   string workflow_id = 1;
 }
 message CancelWorkflowResponse {
+  bool accepted = 1;
+}
+
+message CancelTaskRequest {
+  string task_id = 1;
+}
+message CancelTaskResponse {
   bool accepted = 1;
 }
 

@@ -193,16 +193,18 @@ func TestWorkerService_DispatchTask_DuplicateInFlight_Ignored(t *testing.T) {
 func TestWorkerService_DispatchTask_DifferentWorkflow_NotDeduped(t *testing.T) {
 	ws := newTestService(t, wp.WithWorkerCount(2), wp.WithCapacity(2))
 
-	slowTask := func(workflowID string) *protogen.DispatchRequest {
+	slowTask := func(workflowID, taskID string) *protogen.DispatchRequest {
 		return &protogen.DispatchRequest{
-			WorkflowId: workflowID, TaskId: "build", Type: "shell", TimeoutSeconds: 5,
+			WorkflowId: workflowID, TaskId: taskID, Type: "shell", TimeoutSeconds: 5,
 			Payload: map[string]string{"command": "sleep", "args": "0.2"},
 		}
 	}
 
-	// одинаковый TaskId, разные WorkflowId — ключ дедупа включает оба, коллизии быть не должно
-	assert.NoError(t, ws.DispatchTask(context.Background(), slowTask("wf-1")))
-	assert.NoError(t, ws.DispatchTask(context.Background(), slowTask("wf-2")))
+	// TaskID генерируется control-plane (uuid) и глобально уникален (см. §2 about.md,
+	// domain.NewWorkflow) — разные workflow здесь просто не должны false-положительно
+	// схлопнуться в один дедуп-ключ, если бы он случайно совпал по TaskId
+	assert.NoError(t, ws.DispatchTask(context.Background(), slowTask("wf-1", "build-1")))
+	assert.NoError(t, ws.DispatchTask(context.Background(), slowTask("wf-2", "build-2")))
 
 	time.Sleep(20 * time.Millisecond)
 	assert.EqualValues(t, 2, ws.workerPool.BusyCount())

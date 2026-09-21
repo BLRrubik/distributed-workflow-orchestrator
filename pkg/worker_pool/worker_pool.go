@@ -130,11 +130,7 @@ func (wp *WorkerPool) worker(ctx context.Context) {
 			}
 
 			wp.busyCount.Add(-1)
-
-			time.Sleep(30 * time.Second)
 		}
-
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 

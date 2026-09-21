@@ -498,6 +498,94 @@ func (x *CancelWorkflowResponse) GetAccepted() bool {
 	return false
 }
 
+type CancelTaskRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelTaskRequest) Reset() {
+	*x = CancelTaskRequest{}
+	mi := &file_orchestrator_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelTaskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelTaskRequest) ProtoMessage() {}
+
+func (x *CancelTaskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelTaskRequest.ProtoReflect.Descriptor instead.
+func (*CancelTaskRequest) Descriptor() ([]byte, []int) {
+	return file_orchestrator_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *CancelTaskRequest) GetTaskId() string {
+	if x != nil {
+		return x.TaskId
+	}
+	return ""
+}
+
+type CancelTaskResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelTaskResponse) Reset() {
+	*x = CancelTaskResponse{}
+	mi := &file_orchestrator_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelTaskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelTaskResponse) ProtoMessage() {}
+
+func (x *CancelTaskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchestrator_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelTaskResponse.ProtoReflect.Descriptor instead.
+func (*CancelTaskResponse) Descriptor() ([]byte, []int) {
+	return file_orchestrator_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CancelTaskResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
 // WorkflowEvent — одна запись в потоке StreamWorkflowEvents. task_id пустой для событий
 // уровня всего workflow (например WORKFLOW_STATUS_CHANGED -> SUCCEEDED).
 type WorkflowEvent struct {
@@ -513,7 +601,7 @@ type WorkflowEvent struct {
 
 func (x *WorkflowEvent) Reset() {
 	*x = WorkflowEvent{}
-	mi := &file_orchestrator_proto_msgTypes[8]
+	mi := &file_orchestrator_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -525,7 +613,7 @@ func (x *WorkflowEvent) String() string {
 func (*WorkflowEvent) ProtoMessage() {}
 
 func (x *WorkflowEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_orchestrator_proto_msgTypes[8]
+	mi := &file_orchestrator_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -538,7 +626,7 @@ func (x *WorkflowEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowEvent.ProtoReflect.Descriptor instead.
 func (*WorkflowEvent) Descriptor() ([]byte, []int) {
-	return file_orchestrator_proto_rawDescGZIP(), []int{8}
+	return file_orchestrator_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *WorkflowEvent) GetWorkflowId() string {
@@ -587,7 +675,7 @@ type LeaderHint struct {
 
 func (x *LeaderHint) Reset() {
 	*x = LeaderHint{}
-	mi := &file_orchestrator_proto_msgTypes[9]
+	mi := &file_orchestrator_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -599,7 +687,7 @@ func (x *LeaderHint) String() string {
 func (*LeaderHint) ProtoMessage() {}
 
 func (x *LeaderHint) ProtoReflect() protoreflect.Message {
-	mi := &file_orchestrator_proto_msgTypes[9]
+	mi := &file_orchestrator_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -612,7 +700,7 @@ func (x *LeaderHint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaderHint.ProtoReflect.Descriptor instead.
 func (*LeaderHint) Descriptor() ([]byte, []int) {
-	return file_orchestrator_proto_rawDescGZIP(), []int{9}
+	return file_orchestrator_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LeaderHint) GetLeaderAddress() string {
@@ -667,6 +755,10 @@ const file_orchestrator_proto_rawDesc = "" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\"4\n" +
 	"\x16CancelWorkflowResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\",\n" +
+	"\x11CancelTaskRequest\x12\x17\n" +
+	"\atask_id\x18\x01 \x01(\tR\x06taskId\"0\n" +
+	"\x12CancelTaskResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\"\x9e\x01\n" +
 	"\rWorkflowEvent\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
@@ -678,11 +770,13 @@ const file_orchestrator_proto_rawDesc = "" +
 	"\ttimestamp\x18\x05 \x01(\x03R\ttimestamp\"3\n" +
 	"\n" +
 	"LeaderHint\x12%\n" +
-	"\x0eleader_address\x18\x01 \x01(\tR\rleaderAddress2\xcb\x02\n" +
+	"\x0eleader_address\x18\x01 \x01(\tR\rleaderAddress2\x90\x03\n" +
 	"\x0fOrchestratorAPI\x12O\n" +
 	"\x0eSubmitWorkflow\x12\x1d.worker.SubmitWorkflowRequest\x1a\x1e.worker.SubmitWorkflowResponse\x12I\n" +
 	"\vGetWorkflow\x12\x1a.worker.GetWorkflowRequest\x1a\x1e.worker.WorkflowStatusResponse\x12O\n" +
-	"\x0eCancelWorkflow\x12\x1d.worker.CancelWorkflowRequest\x1a\x1e.worker.CancelWorkflowResponse\x12K\n" +
+	"\x0eCancelWorkflow\x12\x1d.worker.CancelWorkflowRequest\x1a\x1e.worker.CancelWorkflowResponse\x12C\n" +
+	"\n" +
+	"CancelTask\x12\x19.worker.CancelTaskRequest\x1a\x1a.worker.CancelTaskResponse\x12K\n" +
 	"\x14StreamWorkflowEvents\x12\x1a.worker.GetWorkflowRequest\x1a\x15.worker.WorkflowEvent0\x01B\x15Z\x13common/api/protogenb\x06proto3"
 
 var (
@@ -697,7 +791,7 @@ func file_orchestrator_proto_rawDescGZIP() []byte {
 	return file_orchestrator_proto_rawDescData
 }
 
-var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_orchestrator_proto_goTypes = []any{
 	(*TaskDefinition)(nil),         // 0: worker.TaskDefinition
 	(*SubmitWorkflowRequest)(nil),  // 1: worker.SubmitWorkflowRequest
@@ -707,24 +801,28 @@ var file_orchestrator_proto_goTypes = []any{
 	(*WorkflowStatusResponse)(nil), // 5: worker.WorkflowStatusResponse
 	(*CancelWorkflowRequest)(nil),  // 6: worker.CancelWorkflowRequest
 	(*CancelWorkflowResponse)(nil), // 7: worker.CancelWorkflowResponse
-	(*WorkflowEvent)(nil),          // 8: worker.WorkflowEvent
-	(*LeaderHint)(nil),             // 9: worker.LeaderHint
-	nil,                            // 10: worker.TaskDefinition.PayloadEntry
+	(*CancelTaskRequest)(nil),      // 8: worker.CancelTaskRequest
+	(*CancelTaskResponse)(nil),     // 9: worker.CancelTaskResponse
+	(*WorkflowEvent)(nil),          // 10: worker.WorkflowEvent
+	(*LeaderHint)(nil),             // 11: worker.LeaderHint
+	nil,                            // 12: worker.TaskDefinition.PayloadEntry
 }
 var file_orchestrator_proto_depIdxs = []int32{
-	10, // 0: worker.TaskDefinition.payload:type_name -> worker.TaskDefinition.PayloadEntry
+	12, // 0: worker.TaskDefinition.payload:type_name -> worker.TaskDefinition.PayloadEntry
 	0,  // 1: worker.SubmitWorkflowRequest.tasks:type_name -> worker.TaskDefinition
 	4,  // 2: worker.WorkflowStatusResponse.tasks:type_name -> worker.TaskStatusInfo
 	1,  // 3: worker.OrchestratorAPI.SubmitWorkflow:input_type -> worker.SubmitWorkflowRequest
 	3,  // 4: worker.OrchestratorAPI.GetWorkflow:input_type -> worker.GetWorkflowRequest
 	6,  // 5: worker.OrchestratorAPI.CancelWorkflow:input_type -> worker.CancelWorkflowRequest
-	3,  // 6: worker.OrchestratorAPI.StreamWorkflowEvents:input_type -> worker.GetWorkflowRequest
-	2,  // 7: worker.OrchestratorAPI.SubmitWorkflow:output_type -> worker.SubmitWorkflowResponse
-	5,  // 8: worker.OrchestratorAPI.GetWorkflow:output_type -> worker.WorkflowStatusResponse
-	7,  // 9: worker.OrchestratorAPI.CancelWorkflow:output_type -> worker.CancelWorkflowResponse
-	8,  // 10: worker.OrchestratorAPI.StreamWorkflowEvents:output_type -> worker.WorkflowEvent
-	7,  // [7:11] is the sub-list for method output_type
-	3,  // [3:7] is the sub-list for method input_type
+	8,  // 6: worker.OrchestratorAPI.CancelTask:input_type -> worker.CancelTaskRequest
+	3,  // 7: worker.OrchestratorAPI.StreamWorkflowEvents:input_type -> worker.GetWorkflowRequest
+	2,  // 8: worker.OrchestratorAPI.SubmitWorkflow:output_type -> worker.SubmitWorkflowResponse
+	5,  // 9: worker.OrchestratorAPI.GetWorkflow:output_type -> worker.WorkflowStatusResponse
+	7,  // 10: worker.OrchestratorAPI.CancelWorkflow:output_type -> worker.CancelWorkflowResponse
+	9,  // 11: worker.OrchestratorAPI.CancelTask:output_type -> worker.CancelTaskResponse
+	10, // 12: worker.OrchestratorAPI.StreamWorkflowEvents:output_type -> worker.WorkflowEvent
+	8,  // [8:13] is the sub-list for method output_type
+	3,  // [3:8] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -741,7 +839,7 @@ func file_orchestrator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchestrator_proto_rawDesc), len(file_orchestrator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

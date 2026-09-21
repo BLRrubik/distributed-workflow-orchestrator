@@ -21,8 +21,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_Dispatch_FullMethodName   = "/worker.WorkerService/Dispatch"
-	WorkerService_CancelTask_FullMethodName = "/worker.WorkerService/CancelTask"
+	WorkerService_Dispatch_FullMethodName    = "/worker.WorkerService/Dispatch"
+	WorkerService_CancelTasks_FullMethodName = "/worker.WorkerService/CancelTasks"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -32,7 +32,7 @@ const (
 // Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
 type WorkerServiceClient interface {
 	Dispatch(ctx context.Context, in *DispatchRequest, opts ...grpc.CallOption) (*DispatchResponse, error)
-	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error)
+	CancelTasks(ctx context.Context, in *CancelTasksRequest, opts ...grpc.CallOption) (*CancelTasksResponse, error)
 }
 
 type workerServiceClient struct {
@@ -53,10 +53,10 @@ func (c *workerServiceClient) Dispatch(ctx context.Context, in *DispatchRequest,
 	return out, nil
 }
 
-func (c *workerServiceClient) CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error) {
+func (c *workerServiceClient) CancelTasks(ctx context.Context, in *CancelTasksRequest, opts ...grpc.CallOption) (*CancelTasksResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CancelTaskResponse)
-	err := c.cc.Invoke(ctx, WorkerService_CancelTask_FullMethodName, in, out, cOpts...)
+	out := new(CancelTasksResponse)
+	err := c.cc.Invoke(ctx, WorkerService_CancelTasks_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (c *workerServiceClient) CancelTask(ctx context.Context, in *CancelTaskRequ
 // Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
 type WorkerServiceServer interface {
 	Dispatch(context.Context, *DispatchRequest) (*DispatchResponse, error)
-	CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error)
+	CancelTasks(context.Context, *CancelTasksRequest) (*CancelTasksResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -84,8 +84,8 @@ type UnimplementedWorkerServiceServer struct{}
 func (UnimplementedWorkerServiceServer) Dispatch(context.Context, *DispatchRequest) (*DispatchResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Dispatch not implemented")
 }
-func (UnimplementedWorkerServiceServer) CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CancelTask not implemented")
+func (UnimplementedWorkerServiceServer) CancelTasks(context.Context, *CancelTasksRequest) (*CancelTasksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelTasks not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -126,20 +126,20 @@ func _WorkerService_Dispatch_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _WorkerService_CancelTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CancelTaskRequest)
+func _WorkerService_CancelTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelTasksRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(WorkerServiceServer).CancelTask(ctx, in)
+		return srv.(WorkerServiceServer).CancelTasks(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: WorkerService_CancelTask_FullMethodName,
+		FullMethod: WorkerService_CancelTasks_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WorkerServiceServer).CancelTask(ctx, req.(*CancelTaskRequest))
+		return srv.(WorkerServiceServer).CancelTasks(ctx, req.(*CancelTasksRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -156,8 +156,8 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _WorkerService_Dispatch_Handler,
 		},
 		{
-			MethodName: "CancelTask",
-			Handler:    _WorkerService_CancelTask_Handler,
+			MethodName: "CancelTasks",
+			Handler:    _WorkerService_CancelTasks_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -151,27 +151,27 @@ func (x *DispatchResponse) GetReason() string {
 	return ""
 }
 
-type CancelTaskRequest struct {
+type CancelTasksRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	TaskId        string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
+	TaskIds       []string               `protobuf:"bytes,1,rep,name=task_ids,json=taskIds,proto3" json:"task_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CancelTaskRequest) Reset() {
-	*x = CancelTaskRequest{}
+func (x *CancelTasksRequest) Reset() {
+	*x = CancelTasksRequest{}
 	mi := &file_worker_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CancelTaskRequest) String() string {
+func (x *CancelTasksRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CancelTaskRequest) ProtoMessage() {}
+func (*CancelTasksRequest) ProtoMessage() {}
 
-func (x *CancelTaskRequest) ProtoReflect() protoreflect.Message {
+func (x *CancelTasksRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_worker_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -183,39 +183,39 @@ func (x *CancelTaskRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CancelTaskRequest.ProtoReflect.Descriptor instead.
-func (*CancelTaskRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CancelTasksRequest.ProtoReflect.Descriptor instead.
+func (*CancelTasksRequest) Descriptor() ([]byte, []int) {
 	return file_worker_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *CancelTaskRequest) GetTaskId() string {
+func (x *CancelTasksRequest) GetTaskIds() []string {
 	if x != nil {
-		return x.TaskId
+		return x.TaskIds
 	}
-	return ""
+	return nil
 }
 
-type CancelTaskResponse struct {
+type CancelTasksResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cancelled     bool                   `protobuf:"varint,1,opt,name=cancelled,proto3" json:"cancelled,omitempty"` // false, если воркер уже не исполняет эту задачу (завершилась/никогда не была здесь) —
+	Cancelled     map[string]bool        `protobuf:"bytes,1,rep,name=cancelled,proto3" json:"cancelled,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // task_id -> false, если воркер уже не исполняет эту задачу
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CancelTaskResponse) Reset() {
-	*x = CancelTaskResponse{}
+func (x *CancelTasksResponse) Reset() {
+	*x = CancelTasksResponse{}
 	mi := &file_worker_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CancelTaskResponse) String() string {
+func (x *CancelTasksResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CancelTaskResponse) ProtoMessage() {}
+func (*CancelTasksResponse) ProtoMessage() {}
 
-func (x *CancelTaskResponse) ProtoReflect() protoreflect.Message {
+func (x *CancelTasksResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_worker_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -227,16 +227,16 @@ func (x *CancelTaskResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CancelTaskResponse.ProtoReflect.Descriptor instead.
-func (*CancelTaskResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CancelTasksResponse.ProtoReflect.Descriptor instead.
+func (*CancelTasksResponse) Descriptor() ([]byte, []int) {
 	return file_worker_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *CancelTaskResponse) GetCancelled() bool {
+func (x *CancelTasksResponse) GetCancelled() map[string]bool {
 	if x != nil {
 		return x.Cancelled
 	}
-	return false
+	return nil
 }
 
 var File_worker_proto protoreflect.FileDescriptor
@@ -256,15 +256,17 @@ const file_worker_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"F\n" +
 	"\x10DispatchResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\",\n" +
-	"\x11CancelTaskRequest\x12\x17\n" +
-	"\atask_id\x18\x01 \x01(\tR\x06taskId\"2\n" +
-	"\x12CancelTaskResponse\x12\x1c\n" +
-	"\tcancelled\x18\x01 \x01(\bR\tcancelled2\x93\x01\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"/\n" +
+	"\x12CancelTasksRequest\x12\x19\n" +
+	"\btask_ids\x18\x01 \x03(\tR\ataskIds\"\x9d\x01\n" +
+	"\x13CancelTasksResponse\x12H\n" +
+	"\tcancelled\x18\x01 \x03(\v2*.worker.CancelTasksResponse.CancelledEntryR\tcancelled\x1a<\n" +
+	"\x0eCancelledEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x012\x96\x01\n" +
 	"\rWorkerService\x12=\n" +
-	"\bDispatch\x12\x17.worker.DispatchRequest\x1a\x18.worker.DispatchResponse\x12C\n" +
-	"\n" +
-	"CancelTask\x12\x19.worker.CancelTaskRequest\x1a\x1a.worker.CancelTaskResponseB\x15Z\x13common/api/protogenb\x06proto3"
+	"\bDispatch\x12\x17.worker.DispatchRequest\x1a\x18.worker.DispatchResponse\x12F\n" +
+	"\vCancelTasks\x12\x1a.worker.CancelTasksRequest\x1a\x1b.worker.CancelTasksResponseB\x15Z\x13common/api/protogenb\x06proto3"
 
 var (
 	file_worker_proto_rawDescOnce sync.Once
@@ -278,25 +280,27 @@ func file_worker_proto_rawDescGZIP() []byte {
 	return file_worker_proto_rawDescData
 }
 
-var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_worker_proto_goTypes = []any{
-	(*DispatchRequest)(nil),    // 0: worker.DispatchRequest
-	(*DispatchResponse)(nil),   // 1: worker.DispatchResponse
-	(*CancelTaskRequest)(nil),  // 2: worker.CancelTaskRequest
-	(*CancelTaskResponse)(nil), // 3: worker.CancelTaskResponse
-	nil,                        // 4: worker.DispatchRequest.PayloadEntry
+	(*DispatchRequest)(nil),     // 0: worker.DispatchRequest
+	(*DispatchResponse)(nil),    // 1: worker.DispatchResponse
+	(*CancelTasksRequest)(nil),  // 2: worker.CancelTasksRequest
+	(*CancelTasksResponse)(nil), // 3: worker.CancelTasksResponse
+	nil,                         // 4: worker.DispatchRequest.PayloadEntry
+	nil,                         // 5: worker.CancelTasksResponse.CancelledEntry
 }
 var file_worker_proto_depIdxs = []int32{
 	4, // 0: worker.DispatchRequest.payload:type_name -> worker.DispatchRequest.PayloadEntry
-	0, // 1: worker.WorkerService.Dispatch:input_type -> worker.DispatchRequest
-	2, // 2: worker.WorkerService.CancelTask:input_type -> worker.CancelTaskRequest
-	1, // 3: worker.WorkerService.Dispatch:output_type -> worker.DispatchResponse
-	3, // 4: worker.WorkerService.CancelTask:output_type -> worker.CancelTaskResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 1: worker.CancelTasksResponse.cancelled:type_name -> worker.CancelTasksResponse.CancelledEntry
+	0, // 2: worker.WorkerService.Dispatch:input_type -> worker.DispatchRequest
+	2, // 3: worker.WorkerService.CancelTasks:input_type -> worker.CancelTasksRequest
+	1, // 4: worker.WorkerService.Dispatch:output_type -> worker.DispatchResponse
+	3, // 5: worker.WorkerService.CancelTasks:output_type -> worker.CancelTasksResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_worker_proto_init() }
@@ -310,7 +314,7 @@ func file_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_worker_proto_rawDesc), len(file_worker_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

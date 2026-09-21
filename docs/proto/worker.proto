@@ -8,7 +8,7 @@ option go_package = "common/api/protogen";
 // Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
 service WorkerService {
   rpc Dispatch(DispatchRequest) returns (DispatchResponse);
-  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse); // best-effort остановка исполнения
+  rpc CancelTasks(CancelTasksRequest) returns (CancelTasksResponse); // best-effort остановка исполнения, батчем на воркера
 }
 
 message DispatchRequest {
@@ -24,10 +24,11 @@ message DispatchResponse {
   string reason = 2;   // заполнено, если accepted == false ("worker busy" и т.п.)
 }
 
-message CancelTaskRequest {
-  string task_id = 1;
+message CancelTasksRequest {
+  repeated string task_ids = 1;
 }
-message CancelTaskResponse {
-  bool cancelled = 1; // false, если воркер уже не исполняет эту задачу (завершилась/никогда не была здесь) —
-                       // это НЕ ошибка, а нормальный исход гонки с естественным завершением задачи
+message CancelTasksResponse {
+  map<string, bool> cancelled = 1; // task_id -> false, если воркер уже не исполняет эту задачу
+                                    // (завершилась/никогда не была здесь) — это НЕ ошибка, а нормальный
+                                    // исход гонки с естественным завершением задачи
 }

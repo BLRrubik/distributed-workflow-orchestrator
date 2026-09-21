@@ -24,6 +24,7 @@ const (
 	OrchestratorAPI_SubmitWorkflow_FullMethodName       = "/worker.OrchestratorAPI/SubmitWorkflow"
 	OrchestratorAPI_GetWorkflow_FullMethodName          = "/worker.OrchestratorAPI/GetWorkflow"
 	OrchestratorAPI_CancelWorkflow_FullMethodName       = "/worker.OrchestratorAPI/CancelWorkflow"
+	OrchestratorAPI_CancelTask_FullMethodName           = "/worker.OrchestratorAPI/CancelTask"
 	OrchestratorAPI_StreamWorkflowEvents_FullMethodName = "/worker.OrchestratorAPI/StreamWorkflowEvents"
 )
 
@@ -34,6 +35,7 @@ type OrchestratorAPIClient interface {
 	SubmitWorkflow(ctx context.Context, in *SubmitWorkflowRequest, opts ...grpc.CallOption) (*SubmitWorkflowResponse, error)
 	GetWorkflow(ctx context.Context, in *GetWorkflowRequest, opts ...grpc.CallOption) (*WorkflowStatusResponse, error)
 	CancelWorkflow(ctx context.Context, in *CancelWorkflowRequest, opts ...grpc.CallOption) (*CancelWorkflowResponse, error)
+	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error)
 	StreamWorkflowEvents(ctx context.Context, in *GetWorkflowRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WorkflowEvent], error)
 }
 
@@ -75,6 +77,16 @@ func (c *orchestratorAPIClient) CancelWorkflow(ctx context.Context, in *CancelWo
 	return out, nil
 }
 
+func (c *orchestratorAPIClient) CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelTaskResponse)
+	err := c.cc.Invoke(ctx, OrchestratorAPI_CancelTask_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *orchestratorAPIClient) StreamWorkflowEvents(ctx context.Context, in *GetWorkflowRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WorkflowEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &OrchestratorAPI_ServiceDesc.Streams[0], OrchestratorAPI_StreamWorkflowEvents_FullMethodName, cOpts...)
@@ -101,6 +113,7 @@ type OrchestratorAPIServer interface {
 	SubmitWorkflow(context.Context, *SubmitWorkflowRequest) (*SubmitWorkflowResponse, error)
 	GetWorkflow(context.Context, *GetWorkflowRequest) (*WorkflowStatusResponse, error)
 	CancelWorkflow(context.Context, *CancelWorkflowRequest) (*CancelWorkflowResponse, error)
+	CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error)
 	StreamWorkflowEvents(*GetWorkflowRequest, grpc.ServerStreamingServer[WorkflowEvent]) error
 	mustEmbedUnimplementedOrchestratorAPIServer()
 }
@@ -120,6 +133,9 @@ func (UnimplementedOrchestratorAPIServer) GetWorkflow(context.Context, *GetWorkf
 }
 func (UnimplementedOrchestratorAPIServer) CancelWorkflow(context.Context, *CancelWorkflowRequest) (*CancelWorkflowResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CancelWorkflow not implemented")
+}
+func (UnimplementedOrchestratorAPIServer) CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelTask not implemented")
 }
 func (UnimplementedOrchestratorAPIServer) StreamWorkflowEvents(*GetWorkflowRequest, grpc.ServerStreamingServer[WorkflowEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamWorkflowEvents not implemented")
@@ -199,6 +215,24 @@ func _OrchestratorAPI_CancelWorkflow_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OrchestratorAPI_CancelTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorAPIServer).CancelTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OrchestratorAPI_CancelTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorAPIServer).CancelTask(ctx, req.(*CancelTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _OrchestratorAPI_StreamWorkflowEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(GetWorkflowRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -228,6 +262,10 @@ var OrchestratorAPI_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CancelWorkflow",
 			Handler:    _OrchestratorAPI_CancelWorkflow_Handler,
+		},
+		{
+			MethodName: "CancelTask",
+			Handler:    _OrchestratorAPI_CancelTask_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

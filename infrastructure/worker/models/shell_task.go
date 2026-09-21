@@ -86,11 +86,13 @@ func (t *ShellTask) sendStatus(ctx context.Context, status protogen.TaskReportSt
 		result.Stdout = taskResult.Stdout
 		result.Stderr = taskResult.Stderr
 
-		t.log.Error("task execution failed",
-			logger.String("task_id", t.task.ID),
-			logger.String("workflow", t.task.WorkflowID),
-			logger.String("error", taskResult.Error),
-		)
+		if status == protogen.TaskReportStatus_TASK_REPORT_FAILED {
+			t.log.Error("task execution failed",
+				logger.String("task_id", t.task.ID),
+				logger.String("workflow", t.task.WorkflowID),
+				logger.String("error", taskResult.Error),
+			)
+		}
 	}
 
 	if _, err := t.clusterClient.ReportResult(ctx, result); err != nil {

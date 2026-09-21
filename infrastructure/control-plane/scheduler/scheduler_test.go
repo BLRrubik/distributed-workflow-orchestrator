@@ -59,7 +59,18 @@ func newFakeWorkerAddr(t *testing.T) string {
 func TestScheduler_SelectWorker_EmptyWorkers(t *testing.T) {
 	s, _ := newTestScheduler(t)
 
-	_, err := s.selectWorker(nil)
+	_, err := s.selectWorker(nil, "shell")
+	assert.Error(t, err)
+}
+
+func TestScheduler_SelectWorker_NoCapableWorker(t *testing.T) {
+	s, _ := newTestScheduler(t)
+
+	workers := []domain.WorkerNode{
+		{ID: "w1", Capacity: 5, Capabilities: []string{"http"}},
+	}
+
+	_, err := s.selectWorker(workers, "shell")
 	assert.Error(t, err)
 }
 
@@ -68,11 +79,11 @@ func TestScheduler_SelectWorker_FreshWorkerNoPanic(t *testing.T) {
 
 	// RunningTasks == 0 у обоих — раньше падало паникой на делении на ноль
 	workers := []domain.WorkerNode{
-		{ID: "w1", Capacity: 5},
-		{ID: "w2", Capacity: 10},
+		{ID: "w1", Capacity: 5, Capabilities: []string{"shell"}},
+		{ID: "w2", Capacity: 10, Capabilities: []string{"shell"}},
 	}
 
-	id, err := s.selectWorker(workers)
+	id, err := s.selectWorker(workers, "shell")
 	assert.NoError(t, err)
 	assert.Equal(t, "w2", id) // больше свободной капасити
 }
@@ -81,11 +92,11 @@ func TestScheduler_SelectWorker_PicksLeastLoaded(t *testing.T) {
 	s, _ := newTestScheduler(t)
 
 	workers := []domain.WorkerNode{
-		{ID: "busy", Capacity: 10, RunningTasks: 9},
-		{ID: "free", Capacity: 10, RunningTasks: 1},
+		{ID: "busy", Capacity: 10, RunningTasks: 9, Capabilities: []string{"shell"}},
+		{ID: "free", Capacity: 10, RunningTasks: 1, Capabilities: []string{"shell"}},
 	}
 
-	id, err := s.selectWorker(workers)
+	id, err := s.selectWorker(workers, "shell")
 	assert.NoError(t, err)
 	assert.Equal(t, "free", id)
 }
@@ -127,13 +138,13 @@ func TestScheduler_AssignOnce_NoWorkers_RequeuesTask(t *testing.T) {
 func TestScheduler_AssignOnce_AssignsToWorker(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"}}))
 
 	var dispatchedTo string
 
 	s.PushTask(Job{
 		ID:      "task-1",
-		Request: &protogen.DispatchRequest{TaskId: "task-1"},
+		Request: &protogen.DispatchRequest{TaskId: "task-1", Type: "shell"},
 		OnDispatched: func(_ context.Context, workerID string) {
 			dispatchedTo = workerID
 		},
@@ -171,11 +182,11 @@ func TestScheduler_AssignOnce_SkipsDeadWorkers(t *testing.T) {
 func TestScheduler_Run_AssignsOnTick(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"}}))
 
 	s.PushTask(Job{
 		ID:           "task-1",
-		Request:      &protogen.DispatchRequest{TaskId: "task-1"},
+		Request:      &protogen.DispatchRequest{TaskId: "task-1", Type: "shell"},
 		OnDispatched: func(context.Context, string) {},
 	})
 

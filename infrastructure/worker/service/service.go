@@ -140,11 +140,16 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 	return nil
 }
 
-// CancelTask — обработчик WorkerRPC.CancelTask (best-effort остановка). false —
-// не ошибка, а нормальный исход гонки: задача уже успела завершиться сама
-// или никогда не исполнялась на этом воркере.
-func (ws *WorkerService) CancelTask(taskID string) bool {
-	return ws.unique.Cancel(taskID)
+// CancelTasks — обработчик WorkerRPC.CancelTasks (best-effort остановка, батчем).
+// false для конкретного task_id — не ошибка, а нормальный исход гонки: задача
+// уже успела завершиться сама или никогда не исполнялась на этом воркере.
+func (ws *WorkerService) CancelTasks(taskIDs []string) map[string]bool {
+	cancelled := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		cancelled[taskID] = ws.unique.Cancel(taskID)
+	}
+
+	return cancelled
 }
 
 func (ws *WorkerService) heartbeatLoop(ctx context.Context) {
