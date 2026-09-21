@@ -35,11 +35,7 @@ func (t *Task) IsFinished() bool {
 func (t *Task) AllDepsSucceeded(wf *Workflow) bool {
 	for _, dep := range t.DependsOn {
 		task, ok := wf.Tasks[dep]
-		if !ok {
-			continue
-		}
-
-		if task.GetStatus() != TaskSucceeded {
+		if !ok || task.GetStatus() != TaskSucceeded {
 			return false
 		}
 	}

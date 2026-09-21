@@ -109,10 +109,21 @@ func (w *Workflow) AllTasksFinished() bool {
 	return true
 }
 
-// HasFailedTask — есть ли в графе задача, завершившаяся неуспешно.
+// HasFailedTask — есть ли в графе задача, реально провалившаяся (не отменённая).
 func (w *Workflow) HasFailedTask() bool {
 	for _, task := range w.Tasks {
-		if status := task.GetStatus(); status == TaskFailed || status == TaskCancelled {
+		if task.GetStatus() == TaskFailed {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HasCancelledTask — есть ли в графе отменённая задача.
+func (w *Workflow) HasCancelledTask() bool {
+	for _, task := range w.Tasks {
+		if task.GetStatus() == TaskCancelled {
 			return true
 		}
 	}

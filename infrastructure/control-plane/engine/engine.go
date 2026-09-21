@@ -405,15 +405,20 @@ func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string {
 }
 
 // finalizeWorkflowIfDone проверяет, завершены ли все задачи графа, и переводит workflow
-// в терминальный статус (SUCCEEDED, если ни одна задача не провалилась, иначе FAILED).
+// в терминальный статус: FAILED, если реально провалилась хоть одна задача (приоритет
+// выше отмены — см. §4.2 about.md), иначе CANCELLED, если хоть одна отменена, иначе SUCCEEDED.
 func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.Context, wf *domain.Workflow) {
 	if wf.IsFinished() || !wf.AllTasksFinished() {
 		return
 	}
 
 	target := domain.WorkflowSucceeded
-	if wf.HasFailedTask() {
+
+	switch {
+	case wf.HasFailedTask():
 		target = domain.WorkflowFailed
+	case wf.HasCancelledTask():
+		target = domain.WorkflowCancelled
 	}
 
 	e.UpdateWorkflowStatus(ctx, wf, target)
