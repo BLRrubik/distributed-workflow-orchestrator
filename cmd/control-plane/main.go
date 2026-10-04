@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
@@ -32,14 +33,16 @@ func main() {
 
 	workerRegistry := orchestration.NewWorkerRegistry(log)
 
-	go workerRegistry.Run(ctx) // dead man's switch — без него зависшие воркеры никогда не помечаются мёртвыми
+	go workerRegistry.Run(ctx)
+
+	eventBus := event_bus.NewBus(cfg.Bus.Capacity)
 
 	workerClient := client.NewWorkerClient(workerRegistry)
 
 	taskScheduler := scheduler.New(workerRegistry, workerClient, log)
 	go taskScheduler.Run(ctx)
 
-	eng := engine.NewWorkflowEngine(log, taskScheduler, workerClient)
+	eng := engine.NewWorkflowEngine(log, taskScheduler, workerClient, eventBus)
 
 	workerRegistry.OnWorkerDead(func(workerID string) {
 		workerClient.CloseConn(workerID)
@@ -47,7 +50,7 @@ func main() {
 	})
 
 	srv := grpc.NewServer()
-	server.RegisterServer(srv, eng, log, workerRegistry)
+	server.RegisterServer(srv, eng, log, workerRegistry, eventBus)
 
 	var listenConfig net.ListenConfig
 

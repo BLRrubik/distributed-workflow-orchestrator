@@ -38,6 +38,7 @@ func NewShellTask(
 // Do использует ctx жизненного цикла пула (а не запроса) — задача может
 // исполниться спустя минуты после диспатча, когда исходный gRPC-запрос уже завершится.
 func (t *ShellTask) Do(ctx context.Context) error {
+	<-time.After(10 * time.Second)
 	t.sendStatus(ctx, protogen.TaskReportStatus_TASK_REPORT_RUNNING, nil)
 
 	timeout := time.Duration(t.task.TimeoutInSeconds) * time.Second

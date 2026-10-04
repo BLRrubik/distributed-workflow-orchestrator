@@ -67,6 +67,10 @@ func (s TaskStatus) CanTransitTo(newStatus TaskStatus) error {
 	return nil
 }
 
+func (s TaskStatus) IsTerminated() bool {
+	return s == TaskSucceeded || s == TaskFailed || s == TaskCancelled
+}
+
 func (s TaskStatus) String() string {
 	switch s {
 	case TaskPending:

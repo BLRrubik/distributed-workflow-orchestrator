@@ -7,6 +7,10 @@ import (
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/events"
+	eventbus "github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -113,6 +117,82 @@ func (g *grpcServer) StreamWorkflowEvents(
 	request *protogen.GetWorkflowRequest,
 	stream grpc.ServerStreamingServer[protogen.WorkflowEvent],
 ) error {
-	//TODO implement me
-	panic("implement me")
+	wfID := request.GetWorkflowId()
+
+	wf, err := g.engine.GetWorkflow(wfID)
+	if err != nil {
+		return status.Error(codes.NotFound, fmt.Sprintf("workflow not found: %s", wfID))
+	}
+
+	if wf.IsFinished() {
+		return nil
+	}
+
+	err = stream.Send(snapshotToEvent(wf))
+	if err != nil {
+		return status.Error(codes.Internal, fmt.Sprintf("failed to send workflow event: %s", err.Error()))
+	}
+
+	ctx := stream.Context()
+	subID := wfID + "/" + uuid.NewString()
+
+	out := make(chan eventbus.Event, 64)
+
+	handler := func(ev eventbus.Event) {
+		select {
+		case <-ctx.Done():
+			return
+		case out <- ev:
+		default:
+		}
+	}
+
+	if err = g.eventBus.Subscribe(subID, handler); err != nil {
+		return err
+	}
+	defer g.eventBus.Unsubscribe(subID)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev := <-out:
+			switch ev.GetType() {
+			case events.WorkflowStatusChanged:
+				wev, ok := ev.(*events.WorkflowStatusChangedEvent)
+				if !ok {
+					continue
+				}
+
+				if wev.Status.IsTerminated() {
+					return nil
+				}
+
+				if wev.WorkflowID != wfID {
+					continue
+				}
+
+				if err = stream.Send(wev.ToProto()); err != nil {
+					g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
+				}
+			case events.TaskStatusChanged:
+				tev, ok := ev.(*events.TaskStatusChangedEvent)
+				if !ok {
+					continue
+				}
+
+				if err = stream.Send(tev.ToProto()); err != nil {
+					g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
+				}
+			}
+		}
+	}
+}
+
+func snapshotToEvent(wf *domain.Workflow) *protogen.WorkflowEvent {
+	return &protogen.WorkflowEvent{
+		WorkflowId: wf.ID,
+		Status:     wf.GetStatus().String(),
+		Timestamp:  time.Now().Unix(),
+	}
 }

@@ -1,2 +1,5 @@
 grpc:
   port: ":8080"
+
+bus:
+  capacity: 128

@@ -9,7 +9,9 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/events"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
+	eventbus "github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 )
 
 // WorkerNotifier — то немногое, что engine нужно от сети, чтобы остановить
@@ -23,17 +25,24 @@ type WorkflowEngine struct {
 	workflows      map[string]*domain.Workflow
 	scheduler      *scheduler.Scheduler
 	workerNotifier WorkerNotifier
+	eventBus       *eventbus.Bus
 	log            *logger.Logger
 
 	mu sync.RWMutex
 }
 
-func NewWorkflowEngine(log *logger.Logger, scheduler *scheduler.Scheduler, workerNotifier WorkerNotifier) *WorkflowEngine {
+func NewWorkflowEngine(
+	log *logger.Logger,
+	scheduler *scheduler.Scheduler,
+	workerNotifier WorkerNotifier,
+	eventBus *eventbus.Bus,
+) *WorkflowEngine {
 	return &WorkflowEngine{
 		workflows:      make(map[string]*domain.Workflow),
 		scheduler:      scheduler,
 		workerNotifier: workerNotifier,
 		log:            log,
+		eventBus:       eventBus,
 	}
 }
 
@@ -132,6 +141,13 @@ func (e *WorkflowEngine) UpdateTaskStatus(ctx context.Context, task *domain.Task
 		return false
 	}
 
+	e.eventBus.Publish(&events.TaskStatusChangedEvent{
+		TaskID:     task.ID,
+		WorkflowID: task.WorkflowID,
+		Status:     task.GetStatus(),
+		Timestamp:  time.Now().Unix(),
+	})
+
 	return true
 }
 
@@ -147,6 +163,12 @@ func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.Context, wf *domain.Wo
 
 		return false
 	}
+
+	e.eventBus.Publish(&events.WorkflowStatusChangedEvent{
+		WorkflowID: wf.ID,
+		Status:     wf.GetStatus(),
+		Timestamp:  time.Now().Unix(),
+	})
 
 	return true
 }
