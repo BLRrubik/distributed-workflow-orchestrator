@@ -14,20 +14,27 @@ import (
 
 const retryBackoff = 2 * time.Second
 
-type ShellTask struct {
+type TaskInfo struct {
+	ID               string
+	WorkflowID       string
+	Spec             domain.TaskSpec
+	TimeoutInSeconds int64
+}
+
+type ExecutableTask struct {
 	task          *TaskInfo
 	exec          executor.Executor
 	clusterClient *client.GRPCClusterClient
 	log           *logger.Logger
 }
 
-func NewShellTask(
+func NewExecutableTask(
 	task *TaskInfo,
 	exec executor.Executor,
 	clusterClient *client.GRPCClusterClient,
 	log *logger.Logger,
-) *ShellTask {
-	return &ShellTask{
+) *ExecutableTask {
+	return &ExecutableTask{
 		task:          task,
 		exec:          exec,
 		log:           log,
@@ -37,8 +44,7 @@ func NewShellTask(
 
 // Do использует ctx жизненного цикла пула (а не запроса) — задача может
 // исполниться спустя минуты после диспатча, когда исходный gRPC-запрос уже завершится.
-func (t *ShellTask) Do(ctx context.Context) error {
-	<-time.After(10 * time.Second)
+func (t *ExecutableTask) Do(ctx context.Context) error {
 	t.sendStatus(ctx, protogen.TaskReportStatus_TASK_REPORT_RUNNING, nil)
 
 	timeout := time.Duration(t.task.TimeoutInSeconds) * time.Second
@@ -68,13 +74,13 @@ func (t *ShellTask) Do(ctx context.Context) error {
 	return nil
 }
 
-func (t *ShellTask) GetWaitDuration() time.Duration {
+func (t *ExecutableTask) GetWaitDuration() time.Duration {
 	return retryBackoff
 }
 
-func (t *ShellTask) OnDone(error) {}
+func (t *ExecutableTask) OnDone(error) {}
 
-func (t *ShellTask) sendStatus(ctx context.Context, status protogen.TaskReportStatus, taskResult *domain.TaskResult) {
+func (t *ExecutableTask) sendStatus(ctx context.Context, status protogen.TaskReportStatus, taskResult *domain.TaskResult) {
 	result := &protogen.ResultRequest{
 		Status:     status,
 		WorkflowId: t.task.WorkflowID,

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
@@ -71,8 +72,8 @@ func (t *Task) SetResult(result *TaskResult) {
 
 // TaskSpec — абстракция типа задачи.
 type TaskSpec struct {
-	Type    string            // "shell" | "http" | "webhook"
-	Payload map[string]string // например {"cmd": "echo hello"} или {"url": "...", "method": "POST"}
+	Type    string          // "shell" | "http" | "webhook"
+	Payload json.RawMessage // например {"cmd": "echo hello"} или {"url": "...", "method": "POST"}
 }
 
 type TaskResult struct {

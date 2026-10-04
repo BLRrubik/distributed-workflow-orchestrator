@@ -11,6 +11,7 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
+	eventbus "github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 )
 
 func buildTestDeployTasks() []domain.Task {
@@ -28,8 +29,9 @@ func newTestEngine(t *testing.T) *WorkflowEngine {
 	registry := orchestration.NewWorkerRegistry(log)
 	workerClient := client.NewWorkerClient(registry)
 	sched := scheduler.New(registry, workerClient, log)
+	bus := eventbus.NewBus(128)
 
-	return NewWorkflowEngine(log, sched, workerClient)
+	return NewWorkflowEngine(log, sched, workerClient, bus)
 }
 
 func TestSubmitWorkflow_MarksInitialTasksReady(t *testing.T) {

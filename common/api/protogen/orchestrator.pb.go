@@ -29,7 +29,7 @@ type TaskDefinition struct {
 	Name                string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	DependsOn           []string               `protobuf:"bytes,2,rep,name=depends_on,json=dependsOn,proto3" json:"depends_on,omitempty"`
 	Type                string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"` // "shell" | "http" | ... — см. §6.4, executor registry
-	Payload             map[string]string      `protobuf:"bytes,4,rep,name=payload,proto3" json:"payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Payload             string                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	MaxRetries          int32                  `protobuf:"varint,5,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`
 	RetryBackoffSeconds int64                  `protobuf:"varint,6,opt,name=retry_backoff_seconds,json=retryBackoffSeconds,proto3" json:"retry_backoff_seconds,omitempty"`
 	TimeoutSeconds      int64                  `protobuf:"varint,7,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
@@ -88,11 +88,11 @@ func (x *TaskDefinition) GetType() string {
 	return ""
 }
 
-func (x *TaskDefinition) GetPayload() map[string]string {
+func (x *TaskDefinition) GetPayload() string {
 	if x != nil {
 		return x.Payload
 	}
-	return nil
+	return ""
 }
 
 func (x *TaskDefinition) GetMaxRetries() int32 {
@@ -714,20 +714,17 @@ var File_orchestrator_proto protoreflect.FileDescriptor
 
 const file_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\x12orchestrator.proto\x12\x06worker\"\xd0\x02\n" +
+	"\x12orchestrator.proto\x12\x06worker\"\xef\x01\n" +
 	"\x0eTaskDefinition\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"depends_on\x18\x02 \x03(\tR\tdependsOn\x12\x12\n" +
-	"\x04type\x18\x03 \x01(\tR\x04type\x12=\n" +
-	"\apayload\x18\x04 \x03(\v2#.worker.TaskDefinition.PayloadEntryR\apayload\x12\x1f\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\tR\apayload\x12\x1f\n" +
 	"\vmax_retries\x18\x05 \x01(\x05R\n" +
 	"maxRetries\x122\n" +
 	"\x15retry_backoff_seconds\x18\x06 \x01(\x03R\x13retryBackoffSeconds\x12'\n" +
-	"\x0ftimeout_seconds\x18\a \x01(\x03R\x0etimeoutSeconds\x1a:\n" +
-	"\fPayloadEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Y\n" +
+	"\x0ftimeout_seconds\x18\a \x01(\x03R\x0etimeoutSeconds\"Y\n" +
 	"\x15SubmitWorkflowRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x05tasks\x18\x02 \x03(\v2\x16.worker.TaskDefinitionR\x05tasks\"9\n" +
@@ -791,7 +788,7 @@ func file_orchestrator_proto_rawDescGZIP() []byte {
 	return file_orchestrator_proto_rawDescData
 }
 
-var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_orchestrator_proto_goTypes = []any{
 	(*TaskDefinition)(nil),         // 0: worker.TaskDefinition
 	(*SubmitWorkflowRequest)(nil),  // 1: worker.SubmitWorkflowRequest
@@ -805,27 +802,25 @@ var file_orchestrator_proto_goTypes = []any{
 	(*CancelTaskResponse)(nil),     // 9: worker.CancelTaskResponse
 	(*WorkflowEvent)(nil),          // 10: worker.WorkflowEvent
 	(*LeaderHint)(nil),             // 11: worker.LeaderHint
-	nil,                            // 12: worker.TaskDefinition.PayloadEntry
 }
 var file_orchestrator_proto_depIdxs = []int32{
-	12, // 0: worker.TaskDefinition.payload:type_name -> worker.TaskDefinition.PayloadEntry
-	0,  // 1: worker.SubmitWorkflowRequest.tasks:type_name -> worker.TaskDefinition
-	4,  // 2: worker.WorkflowStatusResponse.tasks:type_name -> worker.TaskStatusInfo
-	1,  // 3: worker.OrchestratorAPI.SubmitWorkflow:input_type -> worker.SubmitWorkflowRequest
-	3,  // 4: worker.OrchestratorAPI.GetWorkflow:input_type -> worker.GetWorkflowRequest
-	6,  // 5: worker.OrchestratorAPI.CancelWorkflow:input_type -> worker.CancelWorkflowRequest
-	8,  // 6: worker.OrchestratorAPI.CancelTask:input_type -> worker.CancelTaskRequest
-	3,  // 7: worker.OrchestratorAPI.StreamWorkflowEvents:input_type -> worker.GetWorkflowRequest
-	2,  // 8: worker.OrchestratorAPI.SubmitWorkflow:output_type -> worker.SubmitWorkflowResponse
-	5,  // 9: worker.OrchestratorAPI.GetWorkflow:output_type -> worker.WorkflowStatusResponse
-	7,  // 10: worker.OrchestratorAPI.CancelWorkflow:output_type -> worker.CancelWorkflowResponse
-	9,  // 11: worker.OrchestratorAPI.CancelTask:output_type -> worker.CancelTaskResponse
-	10, // 12: worker.OrchestratorAPI.StreamWorkflowEvents:output_type -> worker.WorkflowEvent
-	8,  // [8:13] is the sub-list for method output_type
-	3,  // [3:8] is the sub-list for method input_type
-	3,  // [3:3] is the sub-list for extension type_name
-	3,  // [3:3] is the sub-list for extension extendee
-	0,  // [0:3] is the sub-list for field type_name
+	0,  // 0: worker.SubmitWorkflowRequest.tasks:type_name -> worker.TaskDefinition
+	4,  // 1: worker.WorkflowStatusResponse.tasks:type_name -> worker.TaskStatusInfo
+	1,  // 2: worker.OrchestratorAPI.SubmitWorkflow:input_type -> worker.SubmitWorkflowRequest
+	3,  // 3: worker.OrchestratorAPI.GetWorkflow:input_type -> worker.GetWorkflowRequest
+	6,  // 4: worker.OrchestratorAPI.CancelWorkflow:input_type -> worker.CancelWorkflowRequest
+	8,  // 5: worker.OrchestratorAPI.CancelTask:input_type -> worker.CancelTaskRequest
+	3,  // 6: worker.OrchestratorAPI.StreamWorkflowEvents:input_type -> worker.GetWorkflowRequest
+	2,  // 7: worker.OrchestratorAPI.SubmitWorkflow:output_type -> worker.SubmitWorkflowResponse
+	5,  // 8: worker.OrchestratorAPI.GetWorkflow:output_type -> worker.WorkflowStatusResponse
+	7,  // 9: worker.OrchestratorAPI.CancelWorkflow:output_type -> worker.CancelWorkflowResponse
+	9,  // 10: worker.OrchestratorAPI.CancelTask:output_type -> worker.CancelTaskResponse
+	10, // 11: worker.OrchestratorAPI.StreamWorkflowEvents:output_type -> worker.WorkflowEvent
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orchestrator_proto_init() }
@@ -839,7 +834,7 @@ func file_orchestrator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchestrator_proto_rawDesc), len(file_orchestrator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

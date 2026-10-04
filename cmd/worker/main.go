@@ -39,9 +39,13 @@ func main() {
 	clusterClient := client.NewClusterClient(cfg.ControlPlane.Address)
 
 	executionRegistry := executrorregistry.New()
-	if err = executor.RegisterExecutors(executionRegistry, cfg.Worker.Capabilities); err != nil {
+
+	registered, err := executor.RegisterExecutors(executionRegistry, cfg.Worker.Capabilities)
+	if err != nil {
 		panic(err)
 	}
+
+	log.Info("executors registered", logger.Any("types", registered))
 
 	node := &domain.WorkerNode{
 		ID:           cfg.Worker.ID,

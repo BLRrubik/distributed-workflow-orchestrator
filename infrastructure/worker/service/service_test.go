@@ -95,7 +95,7 @@ func TestWorkerService_DispatchTask_ExecutesShellTask(t *testing.T) {
 		TaskId:         "task-1",
 		Type:           "shell",
 		TimeoutSeconds: 5,
-		Payload:        map[string]string{"command": "echo"},
+		Payload:        `{"command": "echo"}`,
 	}
 
 	err := ws.DispatchTask(context.Background(), req)
@@ -145,11 +145,11 @@ func TestWorkerService_DispatchTask_SurvivesRequestContextCancel(t *testing.T) {
 	// занимает единственного воркера, чтобы target исполнился уже после отмены reqCtx
 	blocker := &protogen.DispatchRequest{
 		TaskId: "blocker", Type: "shell", TimeoutSeconds: 5,
-		Payload: map[string]string{"command": "sleep", "args": "0.3"},
+		Payload: `{"command": "sleep", "args": "0.3"}`,
 	}
 	target := &protogen.DispatchRequest{
 		TaskId: "target", Type: "shell", TimeoutSeconds: 5,
-		Payload: map[string]string{"command": "echo"},
+		Payload: `{"command": "echo"}`,
 	}
 
 	reqCtx, cancelReq := context.WithCancel(context.Background())
@@ -174,7 +174,7 @@ func TestWorkerService_DispatchTask_DuplicateInFlight_Ignored(t *testing.T) {
 
 	req := &protogen.DispatchRequest{
 		WorkflowId: "wf-1", TaskId: "task-1", Type: "shell", TimeoutSeconds: 5,
-		Payload: map[string]string{"command": "sleep", "args": "0.3"},
+		Payload: `{"command": "sleep", "args": "0.3"}`,
 	}
 
 	assert.NoError(t, ws.DispatchTask(context.Background(), req))
@@ -196,7 +196,7 @@ func TestWorkerService_DispatchTask_DifferentWorkflow_NotDeduped(t *testing.T) {
 	slowTask := func(workflowID, taskID string) *protogen.DispatchRequest {
 		return &protogen.DispatchRequest{
 			WorkflowId: workflowID, TaskId: taskID, Type: "shell", TimeoutSeconds: 5,
-			Payload: map[string]string{"command": "sleep", "args": "0.2"},
+			Payload: `{"command": "sleep", "args": "0.2"}`,
 		}
 	}
 
@@ -217,7 +217,7 @@ func TestWorkerService_DispatchTask_AfterSuccess_AcceptsRedispatch(t *testing.T)
 
 	req := &protogen.DispatchRequest{
 		WorkflowId: "wf-1", TaskId: "task-1", Type: "shell", TimeoutSeconds: 5,
-		Payload: map[string]string{"command": "echo"},
+		Payload: `{"command": "echo"}`,
 	}
 
 	assert.NoError(t, ws.DispatchTask(context.Background(), req))
@@ -331,7 +331,7 @@ func TestWorkerService_DispatchTask_PoolFull(t *testing.T) {
 	slowTask := func(id string) *protogen.DispatchRequest {
 		return &protogen.DispatchRequest{
 			TaskId: id, Type: "shell", TimeoutSeconds: 5,
-			Payload: map[string]string{"command": "sleep", "args": "0.3"},
+			Payload: `{"command": "sleep", "args": "0.3"}`,
 		}
 	}
 

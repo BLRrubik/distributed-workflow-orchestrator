@@ -15,7 +15,7 @@ message DispatchRequest {
   string workflow_id = 1;
   string task_id = 2;
   string type = 3;              // "shell" | "http"
-  map<string, string> payload = 4;
+  string payload = 4;
   int64 timeout_seconds = 5;
 }
 
@@ -29,6 +29,6 @@ message CancelTasksRequest {
 }
 message CancelTasksResponse {
   map<string, bool> cancelled = 1; // task_id -> false, если воркер уже не исполняет эту задачу
-                                    // (завершилась/никогда не была здесь) — это НЕ ошибка, а нормальный
-                                    // исход гонки с естественным завершением задачи
+  // (завершилась/никогда не была здесь) — это НЕ ошибка, а нормальный
+  // исход гонки с естественным завершением задачи
 }

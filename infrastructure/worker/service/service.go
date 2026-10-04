@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -107,12 +108,12 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 		ID:         req.GetTaskId(),
 		WorkflowID: req.GetWorkflowId(),
 		Spec: domain.TaskSpec{
-			Payload: req.GetPayload(),
+			Payload: json.RawMessage(req.GetPayload()),
 		},
 		TimeoutInSeconds: req.GetTimeoutSeconds(),
 	}
 
-	task := models.NewShellTask(
+	task := models.NewExecutableTask(
 		taskInfo,
 		executor,
 		ws.clusterClient,

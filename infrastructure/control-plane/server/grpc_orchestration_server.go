@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -30,7 +31,7 @@ func (g *grpcServer) SubmitWorkflow(
 			Timeout:      time.Duration(task.GetTimeoutSeconds()) * time.Second,
 			Spec: domain.TaskSpec{
 				Type:    task.GetType(),
-				Payload: task.GetPayload(),
+				Payload: json.RawMessage(task.GetPayload()),
 			},
 		})
 	}

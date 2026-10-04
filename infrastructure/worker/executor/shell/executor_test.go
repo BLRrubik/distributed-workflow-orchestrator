@@ -15,7 +15,7 @@ func TestExecutor_Execute_Success(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "echo", "args": "hello"},
+		Payload: []byte(`{"command": "echo", "args": "hello"}`),
 	}, time.Second)
 
 	assert.NoError(t, err)
@@ -28,7 +28,7 @@ func TestExecutor_Execute_NonZeroExitCode(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "false"},
+		Payload: []byte(`{"command": "false"}`),
 	}, time.Second)
 
 	assert.NoError(t, err)
@@ -39,7 +39,7 @@ func TestExecutor_Execute_CapturesStderr(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "ls", "args": "/no-such-path-xyz"},
+		Payload: []byte(`{"command": "ls", "args": "/no-such-path-xyz"}`),
 	}, time.Second)
 
 	assert.NoError(t, err)
@@ -51,7 +51,7 @@ func TestExecutor_Execute_MissingCommand(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{},
+		Payload: []byte(`{}`),
 	}, time.Second)
 
 	assert.Error(t, err)
@@ -62,7 +62,7 @@ func TestExecutor_Execute_BinaryNotFound(t *testing.T) {
 	e := &shell.Executor{}
 
 	_, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "no-such-binary-xyz"},
+		Payload: []byte(`{"command": "no-such-binary-xyz"}`),
 	}, time.Second)
 
 	assert.Error(t, err)
@@ -72,7 +72,7 @@ func TestExecutor_Execute_Timeout(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "sleep", "args": "2"},
+		Payload: []byte(`{"command": "sleep", "args": "2"}`),
 	}, 50*time.Millisecond)
 
 	assert.NoError(t, err)
@@ -84,7 +84,7 @@ func TestExecutor_Execute_MeasuresDuration(t *testing.T) {
 	e := &shell.Executor{}
 
 	result, err := e.Execute(context.Background(), domain.TaskSpec{
-		Payload: map[string]string{"command": "echo", "args": "hi"},
+		Payload: []byte(`{"command": "echo", "args": "hi"}`),
 	}, time.Second)
 
 	assert.NoError(t, err)

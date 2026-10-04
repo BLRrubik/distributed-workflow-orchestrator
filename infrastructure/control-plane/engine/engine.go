@@ -205,7 +205,7 @@ func (e *WorkflowEngine) pushJob(task *domain.Task) {
 			TaskId:         task.ID,
 			WorkflowId:     task.WorkflowID,
 			Type:           task.Spec.Type,
-			Payload:        task.Spec.Payload,
+			Payload:        string(task.Spec.Payload),
 			TimeoutSeconds: int64(task.Timeout.Seconds()),
 		},
 		OnDispatched: func(ctx context.Context, workerID string) {
