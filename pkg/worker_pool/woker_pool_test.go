@@ -29,6 +29,8 @@ func (f *funcTask) GetWaitDuration() time.Duration {
 	return f.wait
 }
 
+func (f *funcTask) OnDone(error) {}
+
 func TestWorkerPool_ExecutesJobs(t *testing.T) {
 	wp := NewWorkerPool()
 

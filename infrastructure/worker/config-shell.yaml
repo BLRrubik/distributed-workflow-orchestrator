@@ -9,3 +9,5 @@ worker:
   address: "localhost:8081"
   capacity: 100
   pool: 2
+  capabilities:
+    - shell

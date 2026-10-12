@@ -6,11 +6,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 	"google.golang.org/grpc"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/config"
@@ -32,70 +31,26 @@ func main() {
 
 	ctx := context.Background()
 
-	tasks := []domain.Task{
-		{
-			ID:        "build",
-			Name:      "build",
-			DependsOn: []string{},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "build",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-		{
-			ID:        "test",
-			Name:      "test",
-			DependsOn: []string{"build"},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "test",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-		{
-			ID:        "deploy",
-			Name:      "deploy",
-			DependsOn: []string{"test"},
-			Spec: domain.TaskSpec{
-				Type: "shell",
-				Payload: map[string]string{
-					"command": "echo",
-					"args":    "deploy",
-				},
-			},
-			Timeout: 10 * time.Second,
-		},
-	}
-
-	wf, err := domain.NewWorkflow("admin", "example-workflow", tasks)
-	if err != nil {
-		panic(err)
-	}
-
 	workerRegistry := orchestration.NewWorkerRegistry(log)
 
-	go workerRegistry.Run(ctx) // dead man's switch — без него зависшие воркеры никогда не помечаются мёртвыми
+	go workerRegistry.Run(ctx)
+
+	eventBus := event_bus.NewBus(cfg.Bus.Capacity)
 
 	workerClient := client.NewWorkerClient(workerRegistry)
-
-	workerRegistry.OnWorkerDead(func(workerID string) {
-		workerClient.CloseConn(workerID)
-	})
 
 	taskScheduler := scheduler.New(workerRegistry, workerClient, log)
 	go taskScheduler.Run(ctx)
 
-	eng := engine.NewWorkflowEngine(log, taskScheduler)
+	eng := engine.NewWorkflowEngine(log, taskScheduler, workerClient, eventBus)
+
+	workerRegistry.OnWorkerDead(func(workerID string) {
+		workerClient.CloseConn(workerID)
+		eng.ReassignDeadWorkerTasks(workerID)
+	})
 
 	srv := grpc.NewServer()
-	server.RegisterServer(srv, eng, log, workerRegistry)
+	server.RegisterServer(srv, eng, log, workerRegistry, eventBus)
 
 	var listenConfig net.ListenConfig
 
@@ -109,13 +64,6 @@ func main() {
 			log.Error("grpc server stopped", logger.Error(err))
 		}
 	}()
-
-	workflowID, err := eng.SubmitWorkflow(ctx, wf)
-	if err != nil {
-		panic(err)
-	}
-
-	log.Info("create workflow successfully", "workflowID", workflowID)
 
 	termChan := make(chan os.Signal, 1)
 

@@ -19,24 +19,36 @@ type Workflow struct {
 }
 
 func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) {
-	tasksMap := make(map[string]*Task, len(tasks))
-	seenNames := make(map[string]struct{}, len(tasks))
+	tasksMapByID := make(map[string]*Task, len(tasks))
+	taskMapByName := make(map[string]*Task, len(tasks))
 
-	for _, task := range tasks {
-		if _, ok := seenNames[task.Name]; ok {
+	for i := range tasks {
+		task := &tasks[i]
+
+		if task.ID == "" {
+			task.ID = uuid.NewString()
+		}
+
+		if _, ok := taskMapByName[task.Name]; ok {
 			return nil, fmt.Errorf("duplicate task name: %s", task.Name)
 		}
 
-		seenNames[task.Name] = struct{}{}
+		if _, ok := tasksMapByID[task.ID]; ok {
+			return nil, fmt.Errorf("duplicate task id: %s", task.ID)
+		}
 
-		tasksMap[task.ID] = &task
+		taskMapByName[task.Name] = task
+		tasksMapByID[task.ID] = task
 	}
 
-	if err := validateDependencies(tasksMap); err != nil {
+	// task_id уже сгенерирован вызывающей стороной, а depends_on в запросе
+	// ссылается на задачи по имени — граф ниже (cycle-check, AllDepsSucceeded,
+	// cancelDownstream) работает по ID, поэтому имена резолвим в ID один раз здесь.
+	if err := resolveDependencies(taskMapByName); err != nil {
 		return nil, fmt.Errorf("invalid tasks: %w", err)
 	}
 
-	if err := validateTasksCycle(tasksMap); err != nil {
+	if err := validateTasksCycle(tasksMapByID); err != nil {
 		return nil, fmt.Errorf("tasks cycle failed: %s", err.Error())
 	}
 
@@ -44,7 +56,7 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		ID:        uuid.NewString(),
 		TenantID:  tenantID,
 		Name:      name,
-		Tasks:     tasksMap,
+		Tasks:     tasksMapByID,
 		status:    WorkflowPending,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -54,6 +66,14 @@ func NewWorkflow(tenantID string, name string, tasks []Task) (*Workflow, error) 
 		wf.Tasks[i].WorkflowID = wf.ID
 		wf.Tasks[i].CreatedAt = time.Now()
 		wf.Tasks[i].UpdatedAt = time.Now()
+
+		if wf.Tasks[i].Timeout == 0 {
+			wf.Tasks[i].Timeout = 30 * time.Second
+		}
+
+		if wf.Tasks[i].RetryBackoff == 0 {
+			wf.Tasks[i].RetryBackoff = 200 * time.Millisecond
+		}
 	}
 
 	return wf, nil
@@ -89,10 +109,10 @@ func (w *Workflow) AllTasksFinished() bool {
 	return true
 }
 
-// HasFailedTask — есть ли в графе задача, завершившаяся неуспешно.
+// HasFailedTask — есть ли в графе задача, реально провалившаяся (не отменённая).
 func (w *Workflow) HasFailedTask() bool {
 	for _, task := range w.Tasks {
-		if status := task.GetStatus(); status == TaskFailed || status == TaskCancelled {
+		if task.GetStatus() == TaskFailed {
 			return true
 		}
 	}
@@ -100,13 +120,33 @@ func (w *Workflow) HasFailedTask() bool {
 	return false
 }
 
-func validateDependencies(tasks map[string]*Task) error {
-	for _, task := range tasks {
-		for _, dep := range task.DependsOn {
-			if _, ok := tasks[dep]; !ok {
-				return fmt.Errorf("invalid dependency: %s", dep)
-			}
+// HasCancelledTask — есть ли в графе отменённая задача.
+func (w *Workflow) HasCancelledTask() bool {
+	for _, task := range w.Tasks {
+		if task.GetStatus() == TaskCancelled {
+			return true
 		}
+	}
+
+	return false
+}
+
+// resolveDependencies валидирует depends_on (заданный по имени задачи) и
+// на месте заменяет имена на ID зависимых задач.
+func resolveDependencies(tasksByName map[string]*Task) error {
+	for _, task := range tasksByName {
+		resolved := make([]string, len(task.DependsOn))
+
+		for i, depName := range task.DependsOn {
+			depTask, ok := tasksByName[depName]
+			if !ok {
+				return fmt.Errorf("invalid dependency: %s", depName)
+			}
+
+			resolved[i] = depTask.ID
+		}
+
+		task.DependsOn = resolved
 	}
 
 	return nil

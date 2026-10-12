@@ -38,11 +38,13 @@ var taskStatusesGraph = [TaskStatusCount][TaskStatusCount]bool{
 		TaskSucceeded: true,
 		TaskFailed:    true,
 		TaskCancelled: true,
+		TaskReady:     true, // воркер умер — переотправка без учёта retry-бюджета
 	},
 	TaskRunning: {
 		TaskSucceeded: true,
 		TaskCancelled: true,
 		TaskFailed:    true,
+		TaskReady:     true, // воркер умер — переотправка без учёта retry-бюджета
 	},
 	TaskFailed: {
 		TaskRetrying: true,
@@ -63,6 +65,10 @@ func (s TaskStatus) CanTransitTo(newStatus TaskStatus) error {
 	}
 
 	return nil
+}
+
+func (s TaskStatus) IsTerminated() bool {
+	return s == TaskSucceeded || s == TaskFailed || s == TaskCancelled
 }
 
 func (s TaskStatus) String() string {

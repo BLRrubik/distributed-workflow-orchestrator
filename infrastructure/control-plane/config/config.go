@@ -12,6 +12,9 @@ type Config struct {
 	GRPC struct {
 		Port string `yaml:"port"`
 	} `yaml:"grpc"`
+	Bus struct {
+		Capacity int `yaml:"capacity"`
+	} `yaml:"bus"`
 }
 
 func Load() (*Config, error) {
@@ -38,4 +41,5 @@ func Load() (*Config, error) {
 func Print(cfg *Config) {
 	fmt.Println("-------CONFIG-------")
 	fmt.Println("GRPC Port:", cfg.GRPC.Port)
+	fmt.Println("BUS Capacity:", cfg.Bus.Capacity)
 }

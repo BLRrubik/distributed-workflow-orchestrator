@@ -2,42 +2,45 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/client"
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/models"
+	er "github.com/blrrubik/distributed-workflow-orchestrator/pkg/executror_registry"
 	wp "github.com/blrrubik/distributed-workflow-orchestrator/pkg/worker_pool"
 )
 
 type WorkerService struct {
-	workerPool    *wp.WorkerPool
-	executors     *executor.Executors
-	clusterClient *client.GRPCClusterClient
-	log           *logger.Logger
-
-	mu       sync.Mutex
-	inFlight map[string]struct{} // ключ workflowID+"/"+taskID — защита от повторного Dispatch, пока задача не завершилась успехом
+	workerPool        *wp.WorkerPool
+	executionRegistry *er.Registry
+	clusterClient     *client.GRPCClusterClient
+	unique            *unique
+	log               *logger.Logger
+	node              *domain.WorkerNode
+	suspended         atomic.Bool // выставляется при провале heartbeat, снимается успешной перерегистрацией
 }
 
 func NewWorkerService(
+	node *domain.WorkerNode,
 	pool *wp.WorkerPool,
-	executors *executor.Executors,
+	executionRegistry *er.Registry,
 	clusterClient *client.GRPCClusterClient,
 	log *logger.Logger,
 ) *WorkerService {
 	return &WorkerService{
-		workerPool:    pool,
-		log:           log,
-		executors:     executors,
-		clusterClient: clusterClient,
-		inFlight:      make(map[string]struct{}),
+		node:              node,
+		workerPool:        pool,
+		log:               log,
+		executionRegistry: executionRegistry,
+		clusterClient:     clusterClient,
+		unique:            newUnique(),
 	}
 }
 
@@ -45,24 +48,33 @@ func NewWorkerService(
 // пул исполнителей и heartbeat-цикл. Незарегистрированный воркер не должен
 // молча крутиться и принимать Dispatch — control-plane про него всё равно
 // ничего не знает, задачи слать ему некому.
-func (ws *WorkerService) Start(ctx context.Context, node *domain.WorkerNode) error {
+func (ws *WorkerService) Start(ctx context.Context) error {
+	if err := ws.register(ctx); err != nil {
+		return err
+	}
+
+	ws.workerPool.Start(ctx)
+
+	go ws.heartbeatLoop(ctx)
+
+	return nil
+}
+
+func (ws *WorkerService) register(ctx context.Context) error {
 	resp, err := ws.clusterClient.Register(ctx, &protogen.RegisterRequest{
-		WorkerId: node.ID,
-		Address:  node.Address,
-		Labels:   node.Labels,
-		Capacity: int32(node.Capacity),
+		WorkerId:     ws.node.ID,
+		Address:      ws.node.Address,
+		Labels:       ws.node.Labels,
+		Capabilities: ws.node.Capabilities,
+		Capacity:     int32(ws.node.Capacity),
 	})
 	if err != nil {
-		return fmt.Errorf("register worker %s: %w", node.ID, err)
+		return fmt.Errorf("register worker %s: %w", ws.node.ID, err)
 	}
 
 	if !resp.GetAccepted() {
 		return fmt.Errorf("registration rejected: %s", resp.GetReason())
 	}
-
-	ws.workerPool.Start(ctx)
-
-	go ws.heartbeatLoop(ctx, node.ID)
 
 	return nil
 }
@@ -72,9 +84,13 @@ func (ws *WorkerService) Start(ctx context.Context, node *domain.WorkerNode) err
 // Это важно: если вернуть ошибку, scheduler интерпретирует её как провал и может
 // передиспатчить задачу на ДРУГОЙ воркер — тогда она реально выполнится дважды.
 func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.DispatchRequest) error {
-	key := inFlightKey(req.GetWorkflowId(), req.GetTaskId())
+	if ws.suspended.Load() {
+		return errors.New("worker suspended: lost connection to control-plane")
+	}
 
-	if !ws.markInFlight(key) {
+	key := req.GetTaskId() // TaskID генерируется control-plane (uuid), глобально уникален
+
+	if !ws.unique.Add(key) {
 		ws.log.Info("task already in flight, skipping duplicate dispatch",
 			logger.String("task_id", req.GetTaskId()),
 			logger.String("workflow_id", req.GetWorkflowId()),
@@ -83,15 +99,41 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 		return nil
 	}
 
-	task, err := ws.getExecutionTask(req)
+	executor, err := ws.executionRegistry.Get(req.GetType())
 	if err != nil {
-		ws.clearInFlight(key)
-
-		return fmt.Errorf("could not find executor for task type %s", req.GetType())
+		return fmt.Errorf("get executor error: %w", err)
 	}
 
-	if ok := ws.workerPool.TrySubmit(&dedupTask{inner: task, key: key, clear: ws.clearInFlight}); !ok {
-		ws.clearInFlight(key)
+	taskInfo := &models.TaskInfo{
+		ID:         req.GetTaskId(),
+		WorkflowID: req.GetWorkflowId(),
+		Spec: domain.TaskSpec{
+			Payload: json.RawMessage(req.GetPayload()),
+		},
+		TimeoutInSeconds: req.GetTimeoutSeconds(),
+	}
+
+	task := models.NewExecutableTask(
+		taskInfo,
+		executor,
+		ws.clusterClient,
+		ws.log,
+	)
+
+	tracked := &trackedTask{
+		inner: task,
+		setCancel: func(cancel context.CancelFunc) {
+			ws.unique.SetCancel(key, cancel)
+		},
+		onDone: func(err error) {
+			if err == nil {
+				ws.unique.Remove(key)
+			}
+		},
+	}
+
+	if ok := ws.workerPool.TrySubmit(tracked); !ok {
+		ws.unique.Remove(key)
 
 		return errors.New("worker pool is full")
 	}
@@ -99,55 +141,19 @@ func (ws *WorkerService) DispatchTask(ctx context.Context, req *protogen.Dispatc
 	return nil
 }
 
-func inFlightKey(workflowID, taskID string) string {
-	return workflowID + "/" + taskID
-}
-
-// markInFlight возвращает false, если ключ уже занят (дубликат).
-func (ws *WorkerService) markInFlight(key string) bool {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	if _, ok := ws.inFlight[key]; ok {
-		return false
+// CancelTasks — обработчик WorkerRPC.CancelTasks (best-effort остановка, батчем).
+// false для конкретного task_id — не ошибка, а нормальный исход гонки: задача
+// уже успела завершиться сама или никогда не исполнялась на этом воркере.
+func (ws *WorkerService) CancelTasks(taskIDs []string) map[string]bool {
+	cancelled := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		cancelled[taskID] = ws.unique.Cancel(taskID)
 	}
 
-	ws.inFlight[key] = struct{}{}
-
-	return true
+	return cancelled
 }
 
-func (ws *WorkerService) clearInFlight(key string) {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
-	delete(ws.inFlight, key)
-}
-
-// dedupTask снимает ключ из inFlight только при успехе. WorkerPool на ошибке
-// перекладывает ТОТ ЖЕ Job в retry (см. moveToRetry) — снимать ключ на каждой
-// попытке нельзя: в окне между провалом и подхватом ретраем туда мог бы
-// проскочить дубликат-диспатч и создать вторую параллельную копию задачи.
-type dedupTask struct {
-	inner wp.Task
-	key   string
-	clear func(string)
-}
-
-func (d *dedupTask) Do(ctx context.Context) error {
-	err := d.inner.Do(ctx)
-	if err == nil {
-		d.clear(d.key)
-	}
-
-	return err //nolint:wrapcheck // прозрачная обёртка: инкапсулированная задача уже сама оборачивает свои ошибки
-}
-
-func (d *dedupTask) GetWaitDuration() time.Duration {
-	return d.inner.GetWaitDuration()
-}
-
-func (ws *WorkerService) heartbeatLoop(ctx context.Context, workerID string) {
+func (ws *WorkerService) heartbeatLoop(ctx context.Context) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 
@@ -156,39 +162,42 @@ func (ws *WorkerService) heartbeatLoop(ctx context.Context, workerID string) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, err := ws.clusterClient.Heartbeat(ctx, &protogen.HeartbeatRequest{
-				WorkerId:     workerID,
-				RunningTasks: ws.workerPool.BusyCount(),
-			})
-			if err != nil {
-				ws.log.Error("heartbeat failed",
-					logger.String("worker_id", workerID),
-					logger.Error(err),
-				)
-			}
+			ws.sendHeartbeat(ctx)
 		}
 	}
 }
 
-func (ws *WorkerService) getExecutionTask(req *protogen.DispatchRequest) (wp.Task, error) {
-	taskInfo := &models.TaskInfo{
-		ID:         req.GetTaskId(),
-		WorkflowID: req.GetWorkflowId(),
-		Spec: domain.TaskSpec{
-			Payload: req.GetPayload(),
-		},
-		TimeoutInSeconds: req.GetTimeoutSeconds(),
+// sendHeartbeat пингует control-plane. Провал пинга подвешивает воркера —
+// DispatchTask начинает отклонять новые задачи — и тут же пробует
+// перерегистрироваться: control-plane мог рестартовать и забыть про воркера,
+// обычный heartbeat такому уже не поможет, нужен новый Register. Успешная
+// перерегистрация сразу снимает suspend, не дожидаясь следующего тика.
+func (ws *WorkerService) sendHeartbeat(ctx context.Context) {
+	_, err := ws.clusterClient.Heartbeat(ctx, &protogen.HeartbeatRequest{
+		WorkerId:     ws.node.ID,
+		RunningTasks: ws.workerPool.BusyCount(),
+	})
+	if err == nil {
+		return
 	}
 
-	switch req.GetType() {
-	case "shell":
-		return models.NewShellTask(
-			taskInfo,
-			ws.executors.Shell,
-			ws.clusterClient,
-			ws.log,
-		), nil
-	default:
-		return nil, errors.New("executor type not supported")
+	ws.log.Error("heartbeat failed, suspending worker",
+		logger.String("worker_id", ws.node.ID),
+		logger.Error(err),
+	)
+
+	ws.suspended.Store(true)
+
+	if regErr := ws.register(ctx); regErr != nil {
+		ws.log.Error("re-registration failed",
+			logger.String("worker_id", ws.node.ID),
+			logger.Error(regErr),
+		)
+
+		return
 	}
+
+	ws.suspended.Store(false)
+
+	ws.log.Info("worker re-registered successfully", logger.String("worker_id", ws.node.ID))
 }

@@ -11,6 +11,10 @@ import (
 type Task interface {
 	Do(ctx context.Context) error
 	GetWaitDuration() time.Duration
+	// OnDone вызывается пулом сразу после Do, с её результатом — независимо
+	// от того, уйдёт задача в retry или нет. Место для очистки состояния,
+	// привязанного к попытке исполнения (например, снять cancel/dedup ключ).
+	OnDone(err error)
 }
 
 type Job struct {
@@ -118,7 +122,10 @@ func (wp *WorkerPool) worker(ctx context.Context) {
 
 			wp.busyCount.Add(1)
 
-			if err := job.task.Do(ctx); err != nil {
+			err := job.task.Do(ctx)
+			job.task.OnDone(err)
+
+			if err != nil {
 				wp.moveToRetry(job)
 			}
 

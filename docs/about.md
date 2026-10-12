@@ -158,10 +158,14 @@ const (
 
 // Workflow — DAG задач
 type Workflow struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Tasks     map[string]*Task // ключ — Task.ID
+	ID          string
+	TenantID    string
+	Name        string
+	Tasks       map[string]*Task // ключ — Task.ID
+	ReverseDeps map[string][]string // taskID -> ID задач, которые ОТ НЕГО зависят (обратные рёбра DependsOn).
+	                                  // Строится один раз при создании (§4.1), нужен для каскадной отмены —
+	                                  // без него пришлось бы каждый раз сканировать все задачи в поисках
+	                                  // "у кого DependsOn содержит этот ID".
 	Status    WorkflowStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -351,10 +355,10 @@ type Command struct {
 
 // OrchestratorFSM реализует raft.FSM поверх доменной модели из common/domain
 type OrchestratorFSM struct {
-	mu           sync.RWMutex
-	workflows    map[string]*domain.Workflow    // ключ — Workflow.ID
-	workers      map[string]*domain.WorkerNode  // ключ — WorkerNode.ID
-	tasksByWorker map[string]map[string]struct{} // workerID -> множество TaskID, назначенных на него
+	mu            sync.RWMutex
+	workflows     map[string]*domain.Workflow // ключ — Workflow.ID
+	workers       map[string]*domain.WorkerNode // ключ — WorkerNode.ID
+	tasksByWorker map[string][]string // workerID -> список TaskID, назначенных на него
 }
 
 func (f *OrchestratorFSM) Apply(entry raft.LogEntry) (interface{}, error) {
@@ -373,17 +377,28 @@ func (f *OrchestratorFSM) Apply(entry raft.LogEntry) (interface{}, error) {
 	//       task.Status = newStatus
 	//       switch {
 	//       case newStatus == domain.TaskDispatched:
-	//           // задача только что закреплена за task.AssignedTo — добавить в индекс
-	//           if f.tasksByWorker[task.AssignedTo] == nil {
-	//               f.tasksByWorker[task.AssignedTo] = make(map[string]struct{})
-	//           }
-	//           f.tasksByWorker[task.AssignedTo][task.ID] = struct{}{}
+	//           // задача только что закреплена за task.AssignedTo — добавить в список.
+	//           // Порядок внутри списка не важен, поэтому просто append, без поиска дублей.
+	//           f.tasksByWorker[task.AssignedTo] = append(f.tasksByWorker[task.AssignedTo], task.ID)
 	//       case prevStatus == domain.TaskDispatched || prevStatus == domain.TaskRunning:
 	//           // задача только что ПЕРЕСТАЛА быть закреплена за воркером — не важно, куда
 	//           // именно она ушла (READY при переназначении, SUCCEEDED/FAILED/CANCELLED) —
-	//           // условие одно: "раньше была на воркере, теперь нет"
-	//           delete(f.tasksByWorker[task.AssignedTo], task.ID)
+	//           // условие одно: "раньше была на воркере, теперь нет". removeTask ищет её
+	//           // линейным перебором (задач на одном воркере обычно мало, ограничено Capacity,
+	//           // так что O(n) здесь дешевле, чем городить map[string]struct{} ради O(1)).
+	//           f.tasksByWorker[task.AssignedTo] = removeTask(f.tasksByWorker[task.AssignedTo], task.ID)
 	//       }
+	//   }
+	//
+	//   // removeTask — swap-remove: порядок элементов не важен, зато без лишних аллокаций
+	//   func removeTask(ids []string, taskID string) []string {
+	//       for i, id := range ids {
+	//           if id == taskID {
+	//               ids[i] = ids[len(ids)-1]
+	//               return ids[:len(ids)-1]
+	//           }
+	//       }
+	//       return ids
 	//   }
 	//
 	// Такое условие "prevStatus было DISPATCHED/RUNNING, а новое — нет" сразу покрывает все
@@ -396,16 +411,19 @@ func (f *OrchestratorFSM) Apply(entry raft.LogEntry) (interface{}, error) {
 
 // TasksAssignedTo — O(k), где k — число задач именно на этом воркере,
 // а не O(общее число задач во всех workflow). Используется в §6.3 при смерти воркера.
+// Возвращает копию, а не сам внутренний срез — чтобы вызывающий код не мог случайно
+// зателепать внутреннее состояние FSM через возвращённый слайс.
 func (f *OrchestratorFSM) TasksAssignedTo(workerID string) []string {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	ids := make([]string, 0, len(f.tasksByWorker[workerID]))
-	for taskID := range f.tasksByWorker[workerID] {
-		ids = append(ids, taskID)
-	}
-	return ids
+	ids := f.tasksByWorker[workerID]
+	out := make([]string, len(ids))
+	copy(out, ids)
+	return out
 }
 ```
+
+**Почему не `map[string]struct{}` (множество) вместо среза.** Множество даёт O(1) удаление вместо O(n), но платит за это лишней аллокацией map на каждого воркера и более тяжёлым API. При типичном размере (число задач на одном воркере ограничено его `Capacity` — единицы-десятки, не тысячи) линейный перебор среза на удаление быстрее в реальности, чем накладные расходы map, и код проще читать. Если когда-нибудь `Capacity` вырастет до сотен/тысяч параллельных задач на воркер — тогда есть смысл вернуться к множеству, но не раньше.
 
 **Почему это НЕ отдельная Raft-команда, а побочный эффект внутри `Apply`.** `tasksByWorker` полностью выводим из уже существующих полей (`Task.AssignedTo` + `Task.Status`) — реплицировать его отдельно было бы дублированием источника истины и риском рассинхрона. Он безопасно пересчитывается детерминированно на каждом узле как побочный эффект применения уже реплицированных команд — это не нарушает детерминизм `Apply`, потому что вычисляется исключительно из данных самой команды, без обращения к времени/сети/рандому.
 
@@ -424,7 +442,7 @@ func (f *OrchestratorFSM) TasksAssignedTo(workerID string) []string {
 
 ## 4. Workflow Engine
 
-Отвечает за интерпретацию DAG и переходы состояний задач. Работает **поверх FSM**, то есть каждое изменение статуса — это команда, проходящая через Raft.
+Отвечает за интерпретацию DAG и переходы состояний задач. **Целевая архитектура** (после Этапа 5, §15) — работает поверх FSM, то есть каждое изменение статуса это команда, проходящая через Raft. **На Этапах 1–4** (Raft ещё не подключён) — тот же самый набор методов и то же поведение снаружи, но внутри `WorkflowEngine` хранит `workflows`/`tasksByWorker` как обычные поля `map[...]...` под собственным `sync.RWMutex`, без FSM/`raft.Node` вообще; `stateReader`/`raft.FSM` ниже — это то, во что эти поля переезжают на Этапе 5 (§5.3 плана внедрения), контракт методов (`TaskStatus`/`TasksAssignedTo`/`ReassignTask`/`SubmitWorkflow`/`OnTaskCompleted`) не меняется.
 
 ```go
 // infrastructure/control-plane/engine/engine.go
@@ -454,7 +472,32 @@ func (e *WorkflowEngine) SubmitWorkflow(ctx context.Context, wf domain.Workflow)
 
 // OnTaskCompleted вызывается, когда Scheduler получил результат от воркера.
 // Пересчитывает READY-множество для зависимых задач.
+//
+// ВАЖНО про идемпотентность: первым делом проверьте текущий task.Status. Если он уже
+// терминальный (SUCCEEDED/FAILED/CANCELLED) — результат опоздал (например, воркер успел
+// прислать ReportResult ровно в момент CancelWorkflow/CancelTask, §4.3/§4.4, или после переназначения
+// по смерти воркера, §6.3) и должен быть тихо проигнорирован: залогировать и вернуть nil,
+// а не применять статус повторно и не считать это ошибкой — вызывающая сторона (воркер)
+// не обязана знать, что задача уже неактуальна.
 func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error
+
+// CancelWorkflow — см. §4.3. Помечает CANCELLED все нетерминальные задачи workflow и
+// возвращает те из них, что были DISPATCHED/RUNNING (вместе с воркером, на котором
+// исполнялись) — чтобы вызывающая сторона могла разослать им CancelTask (§6.2).
+// WorkflowEngine сам НЕ ходит по сети к воркерам — он не знает про WorkerClient (§6.1),
+// это ответственность того, кто его вызывает (grpcserver-обработчик OrchestratorAPI.CancelWorkflow).
+func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error)
+
+// CancelTask — см. §4.4. Отменяет ОДНУ задачу (и каскадом — всё, что от неё зависит),
+// не трогая независимые ветки того же workflow. Возвращает RunningTaskRef, если задача
+// была DISPATCHED/RUNNING (nil, если она ещё не запускалась — отменять на воркере нечего).
+func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) (*RunningTaskRef, error)
+
+// RunningTaskRef — пара (задача, воркер), достаточная, чтобы разослать CancelTask
+type RunningTaskRef struct {
+	TaskID   string
+	WorkerID string
+}
 
 // TaskStatus — используется в §5.2 (retryQueue-триггер отслеживания задачи)
 func (e *WorkflowEngine) TaskStatus(taskID string) domain.TaskStatus {
@@ -473,6 +516,252 @@ func (e *WorkflowEngine) ReassignTask(ctx context.Context, taskID string) error
 
 // recomputeReadyTasks — приватная функция: топологический пересчёт готовых к запуску задач
 func (e *WorkflowEngine) recomputeReadyTasks(wf *domain.Workflow) []string // ID готовых к запуску задач
+```
+
+### 4.1 Каскадная отмена — что происходит с графом, когда задача падает или её отменяют
+
+Вспомните граф из §16.5/ранних примеров:
+
+```
+build ──> test ──> deploy-api
+                └─> deploy-worker
+
+lintA ──> lintB   (независимая ветка, не связана с build)
+```
+
+Если `test` окончательно `FAILED` (после исчерпания `MaxRetries`, §5.2) или кто-то явно отменил именно `test` — `deploy-api`/`deploy-worker` **никогда не смогут стать `READY`** (их зависимость не `SUCCEEDED`). Их нельзя оставить вечно висеть в `PENDING` — нужно явно перевести в `CANCELLED`. При этом `lintA`/`lintB` — независимая ветка, её это не должно останавливать.
+
+**Обратный индекс `ReverseDeps`** (§2) строится один раз при создании workflow, рядом с валидацией DAG:
+
+```go
+func buildReverseDeps(tasks map[string]*domain.Task) map[string][]string {
+	reverse := make(map[string][]string)
+	for _, t := range tasks {
+		for _, depID := range t.DependsOn {
+			reverse[depID] = append(reverse[depID], t.ID) // "от depID зависит t.ID"
+		}
+	}
+	return reverse
+}
+```
+
+**`cancelDownstream`** — BFS по обратным рёбрам, общий механизм и для падения задачи, и для ручной отмены одной задачи (§4.4):
+
+```go
+// cancelDownstream рекурсивно отменяет ещё не запущенные задачи, зависящие (прямо или
+// транзитивно) от rootID — без этого их зависимости никогда не станут SUCCEEDED, и workflow
+// никогда не дойдёт до терминального состояния, а зависнет в RUNNING навсегда.
+func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) {
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+
+		for _, dependentID := range wf.ReverseDeps[id] {
+			task := wf.Tasks[dependentID]
+			if task.Status == domain.TaskSucceeded || task.Status == domain.TaskFailed || task.Status == domain.TaskCancelled {
+				continue // уже терминальна (в т.ч. уже отменена в этом же обходе) — не трогаем
+			}
+			e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+			queue = append(queue, dependentID) // и её "потомков" тоже каскадом
+		}
+	}
+}
+```
+
+Вызывается из `OnTaskCompleted`, когда задача окончательно `FAILED` (после исчерпания ретраев):
+
+```go
+func (e *WorkflowEngine) OnTaskCompleted(ctx context.Context, taskID string, result domain.TaskResult) error {
+	// ... проверка идемпотентности из блока выше ...
+
+	task.Attempt++
+	if result.ExitCode != 0 && task.Attempt < task.MaxRetries {
+		return nil // retryQueue (§5.2) сам вернёт задачу в READY после RetryBackoff
+	}
+
+	newStatus := domain.TaskSucceeded
+	if result.ExitCode != 0 {
+		newStatus = domain.TaskFailed
+	}
+	e.UpdateTaskStatus(ctx, task, newStatus)
+
+	if newStatus == domain.TaskFailed {
+		e.cancelDownstream(ctx, wf, task.ID)
+	} else {
+		newlyReady := e.recomputeReadyTasks(wf)
+		for _, id := range newlyReady {
+			readyTask := wf.Tasks[id]
+			e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady)
+			e.pushToScheduler(readyTask)
+		}
+	}
+
+	e.finalizeWorkflowIfDone(ctx, wf) // §4.2
+	return nil
+}
+```
+
+### 4.2 Финализация workflow
+
+```go
+// finalizeWorkflowIfDone проверяет, завершены ли все задачи графа, и переводит workflow
+// в терминальный статус. НЕ вызывайте это сразу после падения одной задачи — дождитесь,
+// пока ВСЕ ветки (включая независимые, не задетые каскадом) дойдут до терминального статуса,
+// иначе независимая lintA/lintB может быть прервана раньше времени.
+func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.Context, wf *domain.Workflow) {
+	hasActive, hasFailed, hasCancelled := false, false, false
+
+	for _, t := range wf.Tasks {
+		switch t.Status {
+		case domain.TaskPending, domain.TaskReady, domain.TaskDispatched, domain.TaskRunning, domain.TaskRetrying:
+			hasActive = true
+		case domain.TaskFailed:
+			hasFailed = true
+		case domain.TaskCancelled:
+			hasCancelled = true
+		}
+	}
+	if hasActive {
+		return // есть ещё незавершённые ветки — рано подводить итог
+	}
+
+	switch {
+	case hasFailed:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowFailed) // реальный сбой важнее отмены — приоритет
+	case hasCancelled:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
+	default:
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowSucceeded)
+	}
+}
+```
+
+**Опционально — политика fail-fast.** Если вместо "независимые ветки доходят до конца" нужно поведение "упала любая задача — сразу остановить вообще всё" (некоторым CI/CD pipeline это важнее, чем сэкономленное время на догоне независимых веток) — заведите явное поле, а не делайте это поведением по умолчанию:
+
+```go
+type Workflow struct {
+	// ...
+	FailFast bool // если true — при первом TaskFailed все ещё PENDING/READY задачи, включая
+	              // независимые, тоже -> CANCELLED (не только вниз по графу от упавшей)
+}
+```
+
+### 4.3 Отмена всего workflow
+
+Два независимых действия, оба обязательны:
+
+1. **Пометить состояние в control-plane** — это источник истины, происходит сразу и синхронно через Raft. Пока это не сделано, `recomputeReadyTasks`/`Scheduler` продолжат считать отменённые задачи живыми.
+2. **Уведомить воркеров, у кого сейчас реально исполняются (`DISPATCHED`/`RUNNING`) задачи этого workflow** — иначе воркер продолжит жечь CPU/память на процесс, результат которого уже никому не нужен, до истечения собственного `Timeout` задачи.
+
+Это **не блокирующая друг друга** пара действий — control-plane не ждёт подтверждения от воркера, что тот реально остановился, прежде чем считать задачу `CANCELLED`. Решение оптимистичное: control-plane сразу коммитит `CANCELLED` (шаг 1), а уведомление воркера (шаг 2) — best-effort сайд-эффект. Раз возможна гонка (воркер уже отправил `ReportResult` ровно тогда же, когда пришла отмена) — идемпотентность закрывается проверкой терминального статуса в `OnTaskCompleted` (§4), а не ожиданием ack от воркера.
+
+```go
+func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) ([]RunningTaskRef, error) {
+	wf, ok := e.workflows[workflowID] // или e.state.Workflow(workflowID) в версии после Этапа 5
+	if !ok {
+		return nil, fmt.Errorf("workflow not found %s", workflowID)
+	}
+
+	var running []RunningTaskRef
+	for _, task := range wf.Tasks {
+		switch task.Status {
+		case domain.TaskSucceeded, domain.TaskFailed, domain.TaskCancelled:
+			continue // терминальные — трогать нечего
+		case domain.TaskDispatched, domain.TaskRunning:
+			running = append(running, RunningTaskRef{TaskID: task.ID, WorkerID: task.AssignedTo})
+		}
+		e.UpdateTaskStatus(ctx, task, domain.TaskCancelled) // PENDING/READY/DISPATCHED/RUNNING -> CANCELLED
+	}
+
+	e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
+	return running, nil
+}
+```
+
+Обработчик `OrchestratorAPI.CancelWorkflow` (§10.1) дальше, уже вне `WorkflowEngine`, рассылает уведомления по списку `running`:
+
+```go
+// infrastructure/control-plane/grpcserver/orchestrator_api.go
+func (s *Server) CancelWorkflow(ctx context.Context, req *orchestratorpb.CancelWorkflowRequest) (*orchestratorpb.CancelWorkflowResponse, error) {
+	running, err := s.engine.CancelWorkflow(ctx, req.WorkflowId)
+	if err != nil {
+		return nil, err
+	}
+	notifyWorkersOfCancellation(s, running) // общий хелпер, см. §4.4 — используется и здесь, и там
+	return &orchestratorpb.CancelWorkflowResponse{Accepted: true}, nil
+}
+```
+
+### 4.4 Отмена отдельной задачи
+
+Тот же паттерн (§4.3), просто на одну задачу — плюс каскад на её зависимых через `cancelDownstream` (§4.1). Это то, чего **нет** у `CancelWorkflow` (там каскад не нужен — отменяются вообще все нетерминальные задачи разом):
+
+```go
+func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) (*RunningTaskRef, error) {
+	task, ok := e.taskIndex[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task not found %s", taskID)
+	}
+	if task.Status == domain.TaskSucceeded || task.Status == domain.TaskFailed || task.Status == domain.TaskCancelled {
+		return nil, fmt.Errorf("task %s already terminal: %s", taskID, task.Status) // не идемпотентно молчим — это
+		                                                                             // явный вызов пользователя, а не
+		                                                                             // фоновый сигнал от воркера
+	}
+
+	var ref *RunningTaskRef
+	if task.Status == domain.TaskDispatched || task.Status == domain.TaskRunning {
+		ref = &RunningTaskRef{TaskID: task.ID, WorkerID: task.AssignedTo}
+	}
+
+	e.UpdateTaskStatus(ctx, task, domain.TaskCancelled)
+	wf := e.workflows[task.WorkflowID]
+	e.cancelDownstream(ctx, wf, task.ID) // §4.1 — та же самая функция, что и при падении задачи
+	e.finalizeWorkflowIfDone(ctx, wf)    // §4.2 — вдруг это была последняя активная ветка
+
+	return ref, nil
+}
+```
+
+```protobuf
+// docs/proto/orchestrator.proto — дополнение к service OrchestratorAPI (§10.1)
+rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+
+message CancelTaskRequest {
+  string task_id = 1;
+}
+message CancelTaskResponse {
+  bool accepted = 1;
+}
+```
+
+**Не путайте с `WorkerRPC.CancelTask` (§6.2)** — это два разных RPC с одинаковым именем в разных proto-сервисах (никакого конфликта в сгенерированном коде, они в разных пакетах `orchestratorpb`/`workerpb`): один — клиент → control-plane ("отмени задачу X"), другой — control-plane → воркер ("останови процесс задачи X"). `OrchestratorAPI.CancelTask` **вызывает** `WorkerRPC.CancelTask` внутри себя, если задача была активна:
+
+```go
+func (s *Server) CancelTask(ctx context.Context, req *orchestratorpb.CancelTaskRequest) (*orchestratorpb.CancelTaskResponse, error) {
+	ref, err := s.engine.CancelTask(ctx, req.TaskId)
+	if err != nil {
+		return nil, err
+	}
+	if ref != nil {
+		notifyWorkersOfCancellation(s, []engine.RunningTaskRef{*ref}) // общий хелпер с §4.3
+	}
+	return &orchestratorpb.CancelTaskResponse{Accepted: true}, nil
+}
+
+// notifyWorkersOfCancellation — общий best-effort рассыльщик WorkerRPC.CancelTask (§6.2),
+// переиспользуется и CancelWorkflow (§4.3), и CancelTask (это место)
+func notifyWorkersOfCancellation(s *Server, refs []engine.RunningTaskRef) {
+	for _, ref := range refs {
+		go func(ref engine.RunningTaskRef) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := s.workerClient.CancelTask(ctx, ref.WorkerID, ref.TaskID); err != nil {
+				s.log.Warn("failed to notify worker about cancellation", "task", ref.TaskID, "worker", ref.WorkerID, "err", err)
+			}
+		}(ref)
+	}
+}
 ```
 
 **Не дублируйте код постановки задачи в очередь планировщика.** И `recomputeReadyTasks` (первичный перевод в `READY`), и `ReassignTask` (повторная постановка после смерти воркера) заканчиваются одним и тем же действием — задача уходит в `Scheduler`. Вынесите это в отдельный приватный метод (например `pushToScheduler(task)`), который вызывают оба места, а не копируйте сборку запроса/колбэка дважды — иначе при изменении формата задачи для планировщика придётся синхронно править оба места, и рано или поздно один забудут.
@@ -786,6 +1075,7 @@ service ClusterService {
 // Реализует воркер. Вызывает control-plane (после того как решил, кому назначить задачу).
 service WorkerRPC {
   rpc Dispatch(DispatchRequest) returns (DispatchResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse); // §4.3/§4.4 — best-effort остановка исполнения
 }
 
 message RegisterRequest {
@@ -819,6 +1109,14 @@ message DispatchResponse {
   string reason = 2;   // заполнено, если accepted == false ("worker busy" и т.п.)
 }
 
+message CancelTaskRequest {
+  string task_id = 1;
+}
+message CancelTaskResponse {
+  bool cancelled = 1; // false, если воркер уже не исполняет эту задачу (завершилась/никогда не была здесь) —
+                       // это НЕ ошибка, а нормальный исход гонки с естественным завершением задачи
+}
+
 message ResultRequest {
   string task_id = 1;
   int32 exit_code = 2;
@@ -836,6 +1134,7 @@ message ResultResponse {
 2. Воркер каждые N секунд вызывает `ClusterService.Heartbeat` → `WorkerRegistry.Heartbeat` обновляет `LastHeartbeat` и сбрасывает health-check таймер (§6.3).
 3. Control-plane (лидер) решил, что задача X идёт воркеру Y → сам, как **клиент**, вызывает `WorkerRPC.Dispatch` по адресу воркера Y (тот самый `Address` из `RegisterRequest`) → получает `DispatchResponse{accepted: true}`.
 4. Когда задача реально завершилась — воркер вызывает `ClusterService.ReportResult` на control-plane с результатом.
+5. Если workflow или отдельная задача отменены (§4.3/§4.4) — control-plane, тоже как **клиент**, вызывает `WorkerRPC.CancelTask` на воркере, где задача сейчас исполняется — best-effort, не блокирует ответ клиенту на `CancelWorkflow`.
 
 ### 6.3 Health checking (failure detection)
 
@@ -953,6 +1252,53 @@ registry.Register("http", &executor.HTTPExecutor{client: http.DefaultClient})
 Диспетчер при `Dispatch` (§6.2) просто зовёт `registry.Get(req.Type)` и исполняет — новый тип задачи добавляется новым `Executor` и одной строчкой `Register`, без правок диспетчеризации.
 
 Воркер держит пул из `Capacity` goroutine-слотов (используйте `chan struct{}` как семафор или `errgroup` с лимитом), исполняет задачу с `context.WithTimeout`, по завершении вызывает `ReportResult`.
+
+**Отмена задачи (§4.3/§4.4).** Чтобы `CancelTask` реально мог остановить исполнение, а не просто вернуть "ок, записал", воркер должен хранить `context.CancelFunc` каждой исполняющейся задачи — не только `context.WithTimeout` для авто-остановки по таймауту, но и возможность остановить её **раньше**, по внешней команде:
+
+```go
+type Worker struct {
+	mu      sync.Mutex
+	running map[string]context.CancelFunc // taskID -> функция отмены его контекста
+	// ...
+}
+
+func (w *Worker) handleDispatch(req *workerpb.DispatchRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(req.TimeoutSeconds)*time.Second)
+
+	w.mu.Lock()
+	w.running[req.TaskId] = cancel
+	w.mu.Unlock()
+
+	defer func() {
+		w.mu.Lock()
+		delete(w.running, req.TaskId)
+		w.mu.Unlock()
+		cancel() // на всякий случай, если вышли не через отмену/таймаут, а обычным завершением
+	}()
+
+	ex, _ := w.registry.Get(req.Type)
+	result, _ := ex.Execute(ctx, spec, timeout)
+	w.clusterClient.ReportResult(ctx, resultToProto(req.TaskId, result))
+}
+
+// CancelTask — обработчик WorkerRPC.CancelTask (§6.2)
+func (w *Worker) CancelTask(ctx context.Context, req *workerpb.CancelTaskRequest) (*workerpb.CancelTaskResponse, error) {
+	w.mu.Lock()
+	cancel, ok := w.running[req.TaskId]
+	w.mu.Unlock()
+
+	if !ok {
+		// задачи уже нет — либо успела завершиться сама, либо никогда не исполнялась здесь.
+		// Это нормальный исход гонки (§4.3/§4.4), не ошибка.
+		return &workerpb.CancelTaskResponse{Cancelled: false}, nil
+	}
+
+	cancel() // тот же контекст, что получает Executor.Execute — дальше это его забота отреагировать
+	return &workerpb.CancelTaskResponse{Cancelled: true}, nil
+}
+```
+
+`ShellExecutor` уже реагирует на отмену контекста бесплатно — `exec.CommandContext` сам убивает процесс, как только переданный `ctx` отменяется (тем же механизмом, что и на таймауте, §6.4 execute-разбор из более раннего обсуждения). `HTTPExecutor` — аналогично, `http.NewRequestWithContext` прерывает запрос при отмене `ctx`. Собственные `Executor`'ы, которые вы допишете позже (§16.1), обязаны честно слушать `ctx.Done()` внутри своего `Execute` — иначе `CancelTask` вернёт `Cancelled: true`, но работа физически продолжится.
 
 ---
 
@@ -1074,6 +1420,77 @@ service OrchestratorAPI {
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
   rpc StreamWorkflowEvents(GetWorkflowRequest) returns (stream WorkflowEvent); // для CLI/Gateway: live-статус
 }
+
+// TaskDefinition — то, что клиент присылает при создании workflow (соответствует §10.5 YAML один в один).
+// Валидация DAG (§4: существование зависимостей, поиск циклов) происходит на control-plane ДО того,
+// как это попадёт в Raft-лог — сюда долетает ровно то, что написал человек в YAML, без изменений.
+message TaskDefinition {
+  string id = 1;
+  repeated string depends_on = 2;
+  string type = 3;                    // "shell" | "http" | ... — см. §6.4, executor registry
+  map<string, string> payload = 4;
+  int32 max_retries = 5;
+  int64 retry_backoff_seconds = 6;
+  int64 timeout_seconds = 7;
+}
+
+message SubmitWorkflowRequest {
+  string name = 1;
+  repeated TaskDefinition tasks = 2;
+  // TenantID НЕ передаётся полем — проставляется на control-plane из контекста аутентификации
+  // (§9.2, TenantAuthMiddleware), иначе клиент мог бы подделать чужой TenantID в теле запроса.
+}
+message SubmitWorkflowResponse {
+  string workflow_id = 1;
+}
+
+message GetWorkflowRequest {
+  string workflow_id = 1;
+}
+
+// TaskStatusInfo — проекция domain.Task (§2) наружу: не весь Task целиком (там есть внутренние
+// детали вроде AssignedTo, нужные только control-plane), а то, что осмысленно показать клиенту.
+message TaskStatusInfo {
+  string id = 1;
+  string name = 2;
+  string status = 3;       // PENDING | READY | DISPATCHED | RUNNING | SUCCEEDED | FAILED | RETRYING | CANCELLED
+  string assigned_to = 4;  // WorkerID, если уже назначена; пусто для PENDING/READY
+  int32 attempt = 5;
+  string error = 6;        // заполнено, если status == FAILED
+}
+
+message WorkflowStatusResponse {
+  string workflow_id = 1;
+  string name = 2;
+  string status = 3;       // PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
+  repeated TaskStatusInfo tasks = 4;
+}
+
+// Семантика отмены — см. §4.3: пометка CANCELLED синхронна через Raft, уведомление
+// воркеров о реально исполняющихся задачах — best-effort сайд-эффект, не блокирует ответ.
+message CancelWorkflowRequest {
+  string workflow_id = 1;
+}
+message CancelWorkflowResponse {
+  bool accepted = 1;
+}
+
+// WorkflowEvent — одна запись в потоке StreamWorkflowEvents. task_id пустой для событий
+// уровня всего workflow (например WORKFLOW_STATUS_CHANGED -> SUCCEEDED).
+message WorkflowEvent {
+  string workflow_id = 1;
+  string task_id = 2;
+  string event_type = 3;   // "TASK_STATUS_CHANGED" | "WORKFLOW_STATUS_CHANGED"
+  string status = 4;
+  int64 timestamp = 5;     // unix-время на лидере, проставляется ПРИ ЗАПИСИ команды в Raft-лог (§3.5,
+                            // не берите time.Now() на read-пути — иначе значение не детерминировано)
+}
+
+// LeaderHint — детали gRPC-ошибки "not leader" (§10.2): follower подсказывает клиенту,
+// на какой адрес реально стоит повторить запрос.
+message LeaderHint {
+  string leader_address = 1;
+}
 ```
 
 ### 10.2 `LeaderAwareClient` — общий клиент для CLI и Gateway
@@ -1135,6 +1552,8 @@ func notLeaderError(leaderAddr string) error {
 ```text
 orc submit workflow.yaml
 orc get workflow <id>
+orc cancel workflow <id>          # §4.3 — пометка CANCELLED + best-effort остановка воркеров
+orc cancel task <id>              # §4.4 — то же самое, но для одной задачи + каскад на зависимые
 orc watch workflow <id>          # стриминг событий
 orc cluster status                # кто лидер, кто follower, кто down
 orc worker list
@@ -1395,9 +1814,27 @@ tasks:
 `approval`-задача переходит в `RUNNING` и **зависает** там неопределённо долго — никакой `Executor.Execute` для неё не завершает работу сам, завершение приходит извне через API:
 
 ```protobuf
-// docs/proto/orchestrator.proto — дополнение к OrchestratorAPI (§10.1)
+// docs/proto/orchestrator.proto — дополнение к service OrchestratorAPI (§10.1)
 rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
 rpc RejectTask(RejectTaskRequest) returns (RejectTaskResponse);
+
+message ApproveTaskRequest {
+  string task_id = 1;
+  string approved_by = 2; // из контекста аутентификации (§9.2) или явно, если approver отличается от вызывающего
+  string comment = 3;
+}
+message ApproveTaskResponse {
+  bool accepted = 1;
+}
+
+message RejectTaskRequest {
+  string task_id = 1;
+  string rejected_by = 2;
+  string reason = 3;
+}
+message RejectTaskResponse {
+  bool accepted = 1;
+}
 ```
 
 Обработчик просто вызывает уже существующий `WorkflowEngine.OnTaskCompleted` (§4) с нужным статусом — никакой новой логики в движке не нужно, только новый способ её вызвать.

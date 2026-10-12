@@ -41,6 +41,21 @@ func (c *GRPCWorkerClient) Dispatch(
 	return client.Dispatch(ctx, in)
 }
 
+func (c *GRPCWorkerClient) CancelTasks(
+	ctx context.Context,
+	workerID string,
+	taskIDs []string,
+) (*protogen.CancelTasksResponse, error) {
+	conn, err := c.getOrDial(workerID)
+	if err != nil {
+		return nil, err
+	}
+
+	client := protogen.NewWorkerServiceClient(conn)
+
+	return client.CancelTasks(ctx, &protogen.CancelTasksRequest{TaskIds: taskIDs})
+}
+
 func (c *GRPCWorkerClient) getOrDial(workerID string) (*grpc.ClientConn, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

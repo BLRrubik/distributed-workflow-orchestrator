@@ -42,3 +42,11 @@ func (g *GRPCServer) Dispatch(ctx context.Context, request *protogen.DispatchReq
 		Accepted: true,
 	}, nil
 }
+
+func (g *GRPCServer) CancelTasks(ctx context.Context, request *protogen.CancelTasksRequest) (*protogen.CancelTasksResponse, error) {
+	cancelled := g.service.CancelTasks(request.GetTaskIds())
+
+	return &protogen.CancelTasksResponse{
+		Cancelled: cancelled,
+	}, nil
+}

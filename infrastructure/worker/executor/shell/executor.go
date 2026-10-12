@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -13,15 +14,25 @@ import (
 
 type Executor struct{}
 
+// payload — форма, которую shell-задача ожидает в domain.TaskSpec.Payload.
+type payload struct {
+	Command string `json:"command"`
+	Args    string `json:"args"`
+}
+
 func (e *Executor) Execute(ctx context.Context, spec domain.TaskSpec, timeout time.Duration) (domain.TaskResult, error) {
-	command, ok := spec.Payload["command"]
-	if !ok {
+	var p payload
+	if err := json.Unmarshal(spec.Payload, &p); err != nil {
+		return domain.TaskResult{
+			Error: fmt.Sprintf("invalid shell payload: %s", err.Error()),
+		}, fmt.Errorf("invalid shell payload: %w", err)
+	}
+
+	if p.Command == "" {
 		return domain.TaskResult{
 			Error: "command not found in task spec",
 		}, errors.New("command not found in task spec")
 	}
-
-	rawArgs := spec.Payload["args"]
 
 	outWriter := bytes.NewBuffer(nil)
 	errWriter := bytes.NewBuffer(nil)
@@ -29,7 +40,7 @@ func (e *Executor) Execute(ctx context.Context, spec domain.TaskSpec, timeout ti
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(timeoutCtx, command, rawArgs)
+	cmd := exec.CommandContext(timeoutCtx, p.Command, p.Args)
 	cmd.Stdout = outWriter
 	cmd.Stderr = errWriter
 

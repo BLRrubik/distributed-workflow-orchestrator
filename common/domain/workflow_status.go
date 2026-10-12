@@ -37,6 +37,10 @@ func (s WorkflowStatus) CanTransitTo(newStatus WorkflowStatus) error {
 	return nil
 }
 
+func (s WorkflowStatus) IsTerminated() bool {
+	return s == WorkflowSucceeded || s == WorkflowFailed || s == WorkflowCancelled
+}
+
 func (s WorkflowStatus) String() string {
 	switch s {
 	case WorkflowPending:
