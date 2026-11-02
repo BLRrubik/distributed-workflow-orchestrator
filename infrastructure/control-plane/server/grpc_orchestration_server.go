@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/events"
 	eventbus "github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
-	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func (g *grpcServer) SubmitWorkflow(
@@ -38,12 +39,18 @@ func (g *grpcServer) SubmitWorkflow(
 
 	wf, err := domain.NewWorkflow("admin", request.GetName(), tasks)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, fmt.Sprintf("failed to submit workflow: %s", err.Error()))
+		return nil, fmt.Errorf(
+			"orchestration request: %w",
+			status.Error(codes.InvalidArgument, fmt.Sprintf("failed to submit workflow: %s", err.Error())),
+		)
 	}
 
 	id, err := g.engine.SubmitWorkflow(ctx, wf)
 	if err != nil {
-		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to submit workflow: %s", err.Error()))
+		return nil, fmt.Errorf(
+			"orchestration request: %w",
+			status.Error(codes.Internal, fmt.Sprintf("failed to submit workflow: %s", err.Error())),
+		)
 	}
 
 	return &protogen.SubmitWorkflowResponse{
@@ -57,10 +64,14 @@ func (g *grpcServer) GetWorkflow(
 ) (*protogen.WorkflowStatusResponse, error) {
 	workflow, err := g.engine.GetWorkflow(request.GetWorkflowId())
 	if err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("workflow not found: %s", request.GetWorkflowId()))
+		return nil, fmt.Errorf(
+			"orchestration request: %w",
+			status.Error(codes.NotFound, fmt.Sprintf("workflow not found: %s", request.GetWorkflowId())),
+		)
 	}
 
 	tasks := make([]*protogen.TaskStatusInfo, 0, len(workflow.Tasks))
+
 	for _, task := range workflow.Tasks {
 		taskResp := &protogen.TaskStatusInfo{
 			Id:         task.ID,
@@ -95,7 +106,10 @@ func (g *grpcServer) CancelWorkflow(
 	request *protogen.CancelWorkflowRequest,
 ) (*protogen.CancelWorkflowResponse, error) {
 	if err := g.engine.CancelWorkflow(ctx, request.GetWorkflowId()); err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to cancel workflow: %s", err.Error()))
+		return nil, fmt.Errorf(
+			"orchestration request: %w",
+			status.Error(codes.NotFound, fmt.Sprintf("failed to cancel workflow: %s", err.Error())),
+		)
 	}
 
 	return &protogen.CancelWorkflowResponse{Accepted: true}, nil
@@ -108,7 +122,7 @@ func (g *grpcServer) CancelTask(
 	request *protogen.CancelTaskRequest,
 ) (*protogen.CancelTaskResponse, error) {
 	if err := g.engine.CancelTask(ctx, request.GetTaskId()); err != nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to cancel task: %s", err.Error()))
+		return nil, fmt.Errorf("orchestration request: %w", status.Error(codes.NotFound, fmt.Sprintf("failed to cancel task: %s", err.Error())))
 	}
 
 	return &protogen.CancelTaskResponse{Accepted: true}, nil
@@ -122,7 +136,7 @@ func (g *grpcServer) StreamWorkflowEvents(
 
 	wf, err := g.engine.GetWorkflow(wfID)
 	if err != nil {
-		return status.Error(codes.NotFound, fmt.Sprintf("workflow not found: %s", wfID))
+		return fmt.Errorf("stream workflow events: %w", status.Error(codes.NotFound, fmt.Sprintf("workflow not found: %s", wfID)))
 	}
 
 	if wf.IsFinished() {
@@ -131,7 +145,10 @@ func (g *grpcServer) StreamWorkflowEvents(
 
 	err = stream.Send(snapshotToEvent(wf))
 	if err != nil {
-		return status.Error(codes.Internal, fmt.Sprintf("failed to send workflow event: %s", err.Error()))
+		return fmt.Errorf(
+			"stream workflow events: %w",
+			status.Error(codes.Internal, fmt.Sprintf("failed to send workflow event: %s", err.Error())),
+		)
 	}
 
 	ctx := stream.Context()
@@ -149,42 +166,22 @@ func (g *grpcServer) StreamWorkflowEvents(
 	}
 
 	if err = g.eventBus.Subscribe(subID, handler); err != nil {
-		return err
+		return fmt.Errorf("subscribe to workflow events: %w", err)
 	}
-	defer g.eventBus.Unsubscribe(subID)
+
+	defer func() {
+		if err := g.eventBus.Unsubscribe(subID); err != nil {
+			g.log.Warn("failed to unsubscribe", logger.Error(err))
+		}
+	}()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case ev := <-out:
-			switch ev.GetType() {
-			case events.WorkflowStatusChanged:
-				wev, ok := ev.(*events.WorkflowStatusChangedEvent)
-				if !ok {
-					continue
-				}
-
-				if wev.Status.IsTerminated() {
-					return nil
-				}
-
-				if wev.WorkflowID != wfID {
-					continue
-				}
-
-				if err = stream.Send(wev.ToProto()); err != nil {
-					g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
-				}
-			case events.TaskStatusChanged:
-				tev, ok := ev.(*events.TaskStatusChangedEvent)
-				if !ok {
-					continue
-				}
-
-				if err = stream.Send(tev.ToProto()); err != nil {
-					g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
-				}
+			if g.sendWorkflowEvent(stream, wfID, ev) {
+				return nil
 			}
 		}
 	}
@@ -196,4 +193,37 @@ func snapshotToEvent(wf *domain.Workflow) *protogen.WorkflowEvent {
 		Status:     wf.GetStatus().String(),
 		Timestamp:  time.Now().Unix(),
 	}
+}
+
+func (g *grpcServer) sendWorkflowEvent(stream grpc.ServerStreamingServer[protogen.WorkflowEvent], wfID string, ev eventbus.Event) bool {
+	switch ev.GetType() {
+	case events.WorkflowStatusChanged:
+		wev, ok := ev.(*events.WorkflowStatusChangedEvent)
+		if !ok {
+			return false
+		}
+
+		if wev.Status.IsTerminated() {
+			return true
+		}
+
+		if wev.WorkflowID != wfID {
+			return false
+		}
+
+		if err := stream.Send(wev.ToProto()); err != nil {
+			g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
+		}
+	case events.TaskStatusChanged:
+		tev, ok := ev.(*events.TaskStatusChangedEvent)
+		if !ok {
+			return false
+		}
+
+		if err := stream.Send(tev.ToProto()); err != nil {
+			g.log.Error("failed to send event", "workflow_id", wfID, logger.Error(err))
+		}
+	}
+
+	return false
 }

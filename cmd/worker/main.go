@@ -4,20 +4,18 @@ import (
 	"context"
 	"net"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
-	executrorregistry "github.com/blrrubik/distributed-workflow-orchestrator/pkg/executror_registry"
 	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/domain"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/client"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/config"
+	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/executor"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/server"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/worker/service"
+	executrorregistry "github.com/blrrubik/distributed-workflow-orchestrator/pkg/executror_registry"
 	wp "github.com/blrrubik/distributed-workflow-orchestrator/pkg/worker_pool"
 )
-
-const workerCapacity = 8
 
 func main() {
 	cfg, err := config.Load()

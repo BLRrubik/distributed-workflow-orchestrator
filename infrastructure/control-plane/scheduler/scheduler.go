@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -70,13 +71,10 @@ func (s *Scheduler) selectWorker(workers []domain.WorkerNode, taskType string) (
 	}
 
 	candidates := make([]domain.WorkerNode, 0, len(workers))
-	for _, worker := range workers {
-		for _, capability := range worker.Capabilities {
-			if capability == taskType {
-				candidates = append(candidates, worker)
 
-				break
-			}
+	for _, worker := range workers {
+		if slices.Contains(worker.Capabilities, taskType) {
+			candidates = append(candidates, worker)
 		}
 	}
 
@@ -116,6 +114,7 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 
 			// нет подходящего воркера прямо сейчас (все заняты / нет с нужным label)
 			s.queue.Push(job) // вернуть в очередь, попробуем на следующем тике
+
 			continue
 		}
 
@@ -123,6 +122,7 @@ func (s *Scheduler) assignOnce(ctx context.Context) {
 			s.log.Error("failed to commit assignment", "worker", job.Request.GetType(), "err", err)
 
 			s.queue.Push(job) // Raft-команда не прошла (например, потеряли лидерство прямо сейчас) — вернуть
+
 			continue
 		}
 

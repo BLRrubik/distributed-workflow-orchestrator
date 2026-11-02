@@ -173,47 +173,6 @@ func (e *WorkflowEngine) UpdateWorkflowStatus(ctx context.Context, wf *domain.Wo
 	return true
 }
 
-// markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
-func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow) {
-	readyTasks := e.recomputeReadyTasks(wf)
-
-	if len(readyTasks) > 0 && wf.GetStatus() == domain.WorkflowPending {
-		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowRunning)
-	}
-
-	for _, readyTaskID := range readyTasks {
-		readyTask, ok := wf.Tasks[readyTaskID]
-		if !ok {
-			e.log.Error("task not found by ready task", logger.String("task", readyTaskID))
-
-			continue
-		}
-
-		if e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady) {
-			e.log.Info("task ready", logger.String("task", readyTask.ID))
-		}
-
-		e.pushJob(readyTask)
-	}
-}
-
-func (e *WorkflowEngine) pushJob(task *domain.Task) {
-	e.scheduler.PushTask(scheduler.Job{
-		ID:         task.ID,
-		WorkflowID: task.WorkflowID,
-		Request: &protogen.DispatchRequest{
-			TaskId:         task.ID,
-			WorkflowId:     task.WorkflowID,
-			Type:           task.Spec.Type,
-			Payload:        string(task.Spec.Payload),
-			TimeoutSeconds: int64(task.Timeout.Seconds()),
-		},
-		OnDispatched: func(ctx context.Context, workerID string) {
-			e.OnTaskDispatched(ctx, task, workerID)
-		},
-	})
-}
-
 // RunningTaskRef — пара (задача, воркер), достаточная, чтобы разослать CancelTask.
 type RunningTaskRef struct {
 	TaskID   string
@@ -235,6 +194,7 @@ func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 	}
 
 	var running []RunningTaskRef
+
 	for _, task := range wf.Tasks {
 		if task.IsFinished() {
 			continue
@@ -249,7 +209,7 @@ func (e *WorkflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 
 	e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowCancelled)
 
-	e.notifyWorkersOfCancellation(running)
+	e.notifyWorkersOfCancellation(ctx, running)
 
 	return nil
 }
@@ -283,50 +243,9 @@ func (e *WorkflowEngine) CancelTask(ctx context.Context, taskID string) error {
 
 	e.mu.Unlock()
 
-	e.notifyWorkersOfCancellation(running)
+	e.notifyWorkersOfCancellation(ctx, running)
 
 	return nil
-}
-
-// findTask ищет задачу по ID среди всех workflow. O(число workflow * задач в
-// нём) — на этом этапе (до Раздела 5, до FSM) engine не держит глобальный
-// индекс taskID -> workflow, а число активных workflow невелико.
-func (e *WorkflowEngine) findTask(taskID string) (*domain.Workflow, *domain.Task, bool) {
-	for _, wf := range e.workflows {
-		if task, ok := wf.Tasks[taskID]; ok {
-			return wf, task, true
-		}
-	}
-
-	return nil, nil, false
-}
-
-// notifyWorkersOfCancellation — общий best-effort рассыльщик WorkerRPC.CancelTasks,
-// сгруппированный по воркеру: каждому воркеру уходит один батч-запрос со всеми
-// его задачами, а не по вызову на задачу.
-func (e *WorkflowEngine) notifyWorkersOfCancellation(refs []RunningTaskRef) {
-	if len(refs) == 0 || e.workerNotifier == nil {
-		return
-	}
-
-	byWorker := make(map[string][]string)
-	for _, ref := range refs {
-		byWorker[ref.WorkerID] = append(byWorker[ref.WorkerID], ref.TaskID)
-	}
-
-	for workerID, taskIDs := range byWorker {
-		go func(workerID string, taskIDs []string) {
-			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			if _, err := e.workerNotifier.CancelTasks(cancelCtx, workerID, taskIDs); err != nil {
-				e.log.Warn("failed to notify worker about cancellation",
-					logger.String("worker", workerID),
-					logger.Error(err),
-				)
-			}
-		}(workerID, taskIDs)
-	}
 }
 
 // ReassignDeadWorkerTasks — хук на WorkerRegistry.OnWorkerDead: задачи, которые
@@ -374,6 +293,7 @@ func (e *WorkflowEngine) ReassignDeadWorkerTasks(workerID string) {
 // DISPATCHED/RUNNING — вызывающая сторона уведомит их воркеров.
 func (e *WorkflowEngine) cancelDownstream(ctx context.Context, wf *domain.Workflow, rootID string) []RunningTaskRef {
 	var running []RunningTaskRef
+
 	queue := []string{rootID}
 
 	for len(queue) > 0 {
@@ -444,4 +364,86 @@ func (e *WorkflowEngine) finalizeWorkflowIfDone(ctx context.Context, wf *domain.
 	}
 
 	e.UpdateWorkflowStatus(ctx, wf, target)
+}
+
+// markReadyTasks переводит задачи с выполненными зависимостями в статус READY и логирует переход.
+func (e *WorkflowEngine) markReadyTasks(ctx context.Context, wf *domain.Workflow) {
+	readyTasks := e.recomputeReadyTasks(wf)
+
+	if len(readyTasks) > 0 && wf.GetStatus() == domain.WorkflowPending {
+		e.UpdateWorkflowStatus(ctx, wf, domain.WorkflowRunning)
+	}
+
+	for _, readyTaskID := range readyTasks {
+		readyTask, ok := wf.Tasks[readyTaskID]
+		if !ok {
+			e.log.Error("task not found by ready task", logger.String("task", readyTaskID))
+
+			continue
+		}
+
+		if e.UpdateTaskStatus(ctx, readyTask, domain.TaskReady) {
+			e.log.Info("task ready", logger.String("task", readyTask.ID))
+		}
+
+		e.pushJob(readyTask)
+	}
+}
+
+func (e *WorkflowEngine) pushJob(task *domain.Task) {
+	e.scheduler.PushTask(scheduler.Job{
+		ID:         task.ID,
+		WorkflowID: task.WorkflowID,
+		Request: &protogen.DispatchRequest{
+			TaskId:         task.ID,
+			WorkflowId:     task.WorkflowID,
+			Type:           task.Spec.Type,
+			Payload:        string(task.Spec.Payload),
+			TimeoutSeconds: int64(task.Timeout.Seconds()),
+		},
+		OnDispatched: func(ctx context.Context, workerID string) {
+			e.OnTaskDispatched(ctx, task, workerID)
+		},
+	})
+}
+
+// findTask ищет задачу по ID среди всех workflow. O(число workflow * задач в
+// нём) — на этом этапе (до Раздела 5, до FSM) engine не держит глобальный
+// индекс taskID -> workflow, а число активных workflow невелико.
+func (e *WorkflowEngine) findTask(taskID string) (*domain.Workflow, *domain.Task, bool) {
+	for _, wf := range e.workflows {
+		if task, ok := wf.Tasks[taskID]; ok {
+			return wf, task, true
+		}
+	}
+
+	return nil, nil, false
+}
+
+// notifyWorkersOfCancellation — общий best-effort рассыльщик WorkerRPC.CancelTasks,
+// сгруппированный по воркеру: каждому воркеру уходит один батч-запрос со всеми
+// его задачами, а не по вызову на задачу.
+func (e *WorkflowEngine) notifyWorkersOfCancellation(ctx context.Context, refs []RunningTaskRef) {
+	if len(refs) == 0 || e.workerNotifier == nil {
+		return
+	}
+
+	byWorker := make(map[string][]string)
+	for _, ref := range refs {
+		byWorker[ref.WorkerID] = append(byWorker[ref.WorkerID], ref.TaskID)
+	}
+
+	for workerID, taskIDs := range byWorker {
+		go func(workerID string, taskIDs []string) {
+			cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+
+			if _, err := e.workerNotifier.CancelTasks(cancelCtx, workerID, taskIDs); err != nil {
+				e.log.Warn("failed to notify worker about cancellation",
+					logger.String("worker", workerID),
+					logger.Error(err),
+				)
+			}
+		}(workerID, taskIDs)
+	}
 }

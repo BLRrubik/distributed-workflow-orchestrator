@@ -1,4 +1,4 @@
-package event_bus
+package eventbus
 
 import (
 	"fmt"
@@ -55,7 +55,9 @@ func (b *Bus) Subscribe(id string, handler Handler) error {
 	sub := NewSubscriber(id, handler)
 
 	b.subscribers = append(b.subscribers, sub)
+
 	b.wg.Add(1)
+
 	go b.startSubscriber(sub)
 
 	return nil
@@ -68,6 +70,7 @@ func (b *Bus) Unsubscribe(id string) error {
 	for i, sub := range b.subscribers {
 		if sub.id == id {
 			close(sub.close)
+
 			b.subscribers = append(b.subscribers[:i], b.subscribers[i+1:]...)
 
 			break
@@ -98,6 +101,7 @@ func (b *Bus) Shutdown() {
 
 		return
 	}
+
 	b.stopped = true
 	b.mu.Unlock()
 
@@ -114,13 +118,16 @@ func (b *Bus) dispatch() {
 			if !ok {
 				return
 			}
+
 			b.mu.RLock()
+
 			for _, sub := range b.subscribers {
 				select {
 				case sub.queue <- event:
 				default:
 				}
 			}
+
 			b.mu.RUnlock()
 		}
 	}
@@ -128,6 +135,7 @@ func (b *Bus) dispatch() {
 
 func (b *Bus) startSubscriber(sub *Subscriber) {
 	defer b.wg.Done()
+
 	for {
 		select {
 		case e := <-sub.queue:

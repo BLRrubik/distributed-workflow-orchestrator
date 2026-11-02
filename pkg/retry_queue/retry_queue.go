@@ -1,11 +1,9 @@
-package retry_queue
+package retryqueue
 
 import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 )
 
 type node struct {
@@ -19,7 +17,6 @@ type RetryQueue struct {
 	head     *node
 	tail     *node
 	active   map[string]int64
-	log      *logger.Logger
 	mu       sync.Mutex
 }
 
@@ -33,6 +30,7 @@ func NewRetryQueue() *RetryQueue {
 func (q *RetryQueue) Push(trigger RetryTrigger) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
 	key := trigger.GetKey()
 	if _, ok := q.active[key]; !ok {
 		q.active[key] = time.Now().Add(trigger.GetTimeout()).Unix()
@@ -51,6 +49,7 @@ func (q *RetryQueue) StopLoop() {
 	case <-q.stopChan:
 	default:
 		q.stopChan <- true
+
 		close(q.stopChan)
 	}
 }
@@ -62,31 +61,39 @@ func (q *RetryQueue) RunLoop(ctx context.Context) {
 		t       int64
 		key     string
 	)
+
 	for {
 		select {
 		case <-q.stopChan:
 			return
 		default:
 			time.Sleep(100 * time.Microsecond)
+
 			ok = false
+
 			q.mu.Lock()
+
 			trigger = q.dequeue()
 			if trigger != nil {
 				key = trigger.GetKey()
 				t, ok = q.active[key]
 			}
 			q.mu.Unlock()
+
 			if !ok {
 				continue
 			}
+
 			if time.Now().Unix() >= t {
 				trigger.Log(ctx)
+
 				if trigger.Do(ctx) {
 					t = time.Now().Add(trigger.GetTimeout()).Unix()
 				} else {
 					q.Cancel(key)
 				}
 			}
+
 			q.mu.Lock()
 			if _, ok = q.active[key]; ok {
 				q.active[key] = t
@@ -117,6 +124,7 @@ func (q *RetryQueue) ActiveKeys() []string {
 	defer q.mu.Unlock()
 
 	const top = 100
+
 	s := make([]string, 0, min(len(q.active), top))
 	for trigger := q.head; trigger != nil && len(s) < top; trigger = trigger.next {
 		key := trigger.value.GetKey()
@@ -132,7 +140,9 @@ func (q *RetryQueue) ActiveKeys() []string {
 func (q *RetryQueue) ActiveExists(key string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
 	var ok bool
+
 	_, ok = q.active[key]
 
 	return ok
@@ -149,6 +159,7 @@ func (q *RetryQueue) enqueue(trigger RetryTrigger) {
 		q.tail.next = n
 		q.tail = n
 	}
+
 	q.len++
 }
 
@@ -156,11 +167,14 @@ func (q *RetryQueue) dequeue() RetryTrigger {
 	if q.head == nil {
 		return nil
 	}
+
 	tmp := q.head
+
 	q.head = q.head.next
 	if q.head == nil {
 		q.tail = nil
 	}
+
 	tmp.next = nil
 	q.len--
 

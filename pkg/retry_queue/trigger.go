@@ -1,4 +1,4 @@
-package retry_queue
+package retryqueue
 
 import (
 	"context"
