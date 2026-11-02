@@ -40,12 +40,11 @@ func (u *unique) Remove(id string) {
 	if u == nil {
 		return
 	}
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if _, ok := u.items[id]; ok {
-		delete(u.items, id)
-	}
+	delete(u.items, id)
 }
 
 // SetCancel привязывает cancel текущей попытки исполнения к уже занятому Add id —

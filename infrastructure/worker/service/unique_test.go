@@ -54,19 +54,16 @@ func TestUnique_ConcurrentAdd_OnlyOneWinner(t *testing.T) {
 	wins := make(chan bool, goroutines)
 
 	for range goroutines {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			wins <- u.Add("race-key")
-		}()
+		})
 	}
 
 	wg.Wait()
 	close(wins)
 
 	trueCount := 0
+
 	for w := range wins {
 		if w {
 			trueCount++

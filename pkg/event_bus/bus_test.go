@@ -1,4 +1,4 @@
-package event_bus
+package eventbus
 
 import (
 	"sync"
@@ -13,13 +13,16 @@ func (e testEvent) GetType() string { return e.typ }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
+
 		time.Sleep(time.Millisecond)
 	}
+
 	t.Fatal("condition not met within timeout")
 }
 
@@ -28,10 +31,12 @@ func TestPublishDeliversToSubscriber(t *testing.T) {
 	defer b.Shutdown()
 
 	var got atomic.Value
+
 	done := make(chan struct{}, 1)
 
 	err := b.Subscribe("sub1", func(e Event) {
 		got.Store(e)
+
 		done <- struct{}{}
 	})
 	if err != nil {
@@ -57,11 +62,14 @@ func TestPublishFansOutToMultipleSubscribers(t *testing.T) {
 	defer b.Shutdown()
 
 	const n = 5
+
 	var wg sync.WaitGroup
+
 	wg.Add(n)
+
 	var count atomic.Int32
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := string(rune('a' + i))
 		if err := b.Subscribe(id, func(e Event) {
 			count.Add(1)
@@ -74,6 +82,7 @@ func TestPublishFansOutToMultipleSubscribers(t *testing.T) {
 	b.Publish(testEvent{typ: "broadcast"})
 
 	waitDone := make(chan struct{})
+
 	go func() {
 		wg.Wait()
 		close(waitDone)
@@ -95,6 +104,7 @@ func TestSubscribeSameIDReplacesOldSubscriber(t *testing.T) {
 	if err := b.Subscribe("dup", func(e Event) { oldCalls.Add(1) }); err != nil {
 		t.Fatalf("first Subscribe failed: %v", err)
 	}
+
 	if err := b.Subscribe("dup", func(e Event) { newCalls.Add(1) }); err != nil {
 		t.Fatalf("second Subscribe failed: %v", err)
 	}
@@ -113,6 +123,7 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 	defer b.Shutdown()
 
 	var calls atomic.Int32
+
 	if err := b.Subscribe("sub1", func(e Event) { calls.Add(1) }); err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -124,6 +135,7 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 	b.Publish(testEvent{typ: "after-unsub"})
 
 	time.Sleep(100 * time.Millisecond)
+
 	if calls.Load() != 0 {
 		t.Fatalf("unsubscribed handler still called: %d calls", calls.Load())
 	}
@@ -133,6 +145,7 @@ func TestPublishAfterShutdownIsNoop(t *testing.T) {
 	b := NewBus(4)
 
 	var calls atomic.Int32
+
 	if err := b.Subscribe("sub1", func(e Event) { calls.Add(1) }); err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -141,6 +154,7 @@ func TestPublishAfterShutdownIsNoop(t *testing.T) {
 	b.Publish(testEvent{typ: "ignored"})
 
 	time.Sleep(50 * time.Millisecond)
+
 	if calls.Load() != 0 {
 		t.Fatalf("handler called after shutdown: %d calls", calls.Load())
 	}
@@ -162,6 +176,7 @@ func TestShutdownIsIdempotent(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+
 	go func() {
 		b.Shutdown()
 		b.Shutdown()
@@ -181,7 +196,7 @@ func TestShutdownIsIdempotent(t *testing.T) {
 func TestConcurrentPublishAndShutdownNoDeadlock(t *testing.T) {
 	b := NewBus(8)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		id := string(rune('a' + i))
 		if err := b.Subscribe(id, func(e Event) {}); err != nil {
 			t.Fatalf("Subscribe failed: %v", err)
@@ -189,14 +204,17 @@ func TestConcurrentPublishAndShutdownNoDeadlock(t *testing.T) {
 	}
 
 	publishersDone := make(chan struct{})
+
 	go func() {
-		for i := 0; i < 2000; i++ {
+		for range 2000 {
 			b.Publish(testEvent{typ: "spam"})
 		}
+
 		close(publishersDone)
 	}()
 
 	shutdownDone := make(chan struct{})
+
 	go func() {
 		time.Sleep(time.Millisecond)
 		b.Shutdown()
@@ -208,10 +226,12 @@ func TestConcurrentPublishAndShutdownNoDeadlock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Shutdown did not complete - possible deadlock")
 	}
+
 	<-publishersDone
 
 	// If RLock leaked in dispatch(), any further Lock-based call hangs forever.
 	postShutdownDone := make(chan struct{})
+
 	go func() {
 		_ = b.Unsubscribe("a")
 		b.Publish(testEvent{typ: "post-shutdown"})

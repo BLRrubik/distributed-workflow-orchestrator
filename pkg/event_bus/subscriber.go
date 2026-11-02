@@ -1,4 +1,4 @@
-package event_bus
+package eventbus
 
 type Handler func(e Event)
 

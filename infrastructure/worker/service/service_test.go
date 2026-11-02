@@ -76,7 +76,11 @@ func newTestService(t *testing.T, opts ...wp.WorkerPoolOpt) *WorkerService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pool := wp.NewWorkerPool(opts...)
-	ws := NewWorkerService(&domain.WorkerNode{ID: "test-worker"}, pool, newTestRegistry(), newFakeClusterClient(t), logger.New(logger.ERROR, false))
+	ws := NewWorkerService(
+		&domain.WorkerNode{ID: "test-worker"},
+		pool, newTestRegistry(), newFakeClusterClient(t),
+		logger.New(logger.ERROR, false),
+	)
 
 	require.NoError(t, ws.Start(ctx))
 
@@ -116,7 +120,11 @@ func TestWorkerService_DispatchTask_UnknownExecutorType(t *testing.T) {
 
 func TestWorkerService_Start_FailsWhenRegistrationRejected(t *testing.T) {
 	pool := wp.NewWorkerPool()
-	ws := NewWorkerService(&domain.WorkerNode{ID: "w1"}, pool, newTestRegistry(), client.NewClusterClient("127.0.0.1:0"), logger.New(logger.ERROR, false))
+	ws := NewWorkerService(
+		&domain.WorkerNode{ID: "w1"},
+		pool, newTestRegistry(), client.NewClusterClient("127.0.0.1:0"),
+		logger.New(logger.ERROR, false),
+	)
 
 	err := ws.Start(context.Background())
 	assert.Error(t, err, "недостижимый control-plane — Start обязан вернуть ошибку, а не тихо поднять пул")

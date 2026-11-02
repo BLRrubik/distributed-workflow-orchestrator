@@ -76,6 +76,7 @@ func (e *Executor) Execute(ctx context.Context, spec domain.TaskSpec, timeout ti
 			Duration: duration,
 		}, nil
 	}
+
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(resp.Body)

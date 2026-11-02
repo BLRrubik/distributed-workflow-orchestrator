@@ -138,7 +138,9 @@ func TestScheduler_AssignOnce_NoWorkers_RequeuesTask(t *testing.T) {
 func TestScheduler_AssignOnce_AssignsToWorker(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"}}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{
+		ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"},
+	}))
 
 	var dispatchedTo string
 
@@ -182,7 +184,9 @@ func TestScheduler_AssignOnce_SkipsDeadWorkers(t *testing.T) {
 func TestScheduler_Run_AssignsOnTick(t *testing.T) {
 	s, registry := newTestScheduler(t)
 
-	assert.NoError(t, registry.Register(domain.WorkerNode{ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"}}))
+	assert.NoError(t, registry.Register(domain.WorkerNode{
+		ID: "w1", Address: newFakeWorkerAddr(t), Capacity: 5, Capabilities: []string{"shell"},
+	}))
 
 	s.PushTask(Job{
 		ID:           "task-1",

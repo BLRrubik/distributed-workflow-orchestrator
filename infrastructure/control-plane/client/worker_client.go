@@ -2,11 +2,13 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 )
 
 type AddressResolver interface {
@@ -38,7 +40,12 @@ func (c *GRPCWorkerClient) Dispatch(
 
 	client := protogen.NewWorkerServiceClient(conn)
 
-	return client.Dispatch(ctx, in)
+	resp, err := client.Dispatch(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch to worker %s: %w", workerID, err)
+	}
+
+	return resp, nil
 }
 
 func (c *GRPCWorkerClient) CancelTasks(
@@ -53,7 +60,24 @@ func (c *GRPCWorkerClient) CancelTasks(
 
 	client := protogen.NewWorkerServiceClient(conn)
 
-	return client.CancelTasks(ctx, &protogen.CancelTasksRequest{TaskIds: taskIDs})
+	resp, err := client.CancelTasks(ctx, &protogen.CancelTasksRequest{TaskIds: taskIDs})
+	if err != nil {
+		return nil, fmt.Errorf("cancel tasks on worker %s: %w", workerID, err)
+	}
+
+	return resp, nil
+}
+
+// CloseConn вызывается из WorkerRegistry.markDead — закрыть и убрать протухшее соединение.
+func (c *GRPCWorkerClient) CloseConn(workerID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if conn, ok := c.conns[workerID]; ok {
+		_ = conn.Close() // Best effort: discard the stale connection regardless of close result.
+
+		delete(c.conns, workerID)
+	}
 }
 
 func (c *GRPCWorkerClient) getOrDial(workerID string) (*grpc.ClientConn, error) {
@@ -68,22 +92,10 @@ func (c *GRPCWorkerClient) getOrDial(workerID string) (*grpc.ClientConn, error) 
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dial worker %s: %w", workerID, err)
 	}
 
 	c.conns[workerID] = conn
 
 	return conn, nil
-}
-
-// CloseConn вызывается из WorkerRegistry.markDead — закрыть и убрать протухшее соединение
-func (c *GRPCWorkerClient) CloseConn(workerID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if conn, ok := c.conns[workerID]; ok {
-		conn.Close()
-
-		delete(c.conns, workerID)
-	}
 }

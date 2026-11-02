@@ -14,6 +14,8 @@ output:
 linters:
   default: all
   disable:
+    - wsl # deprecated duplicate of enabled wsl_v5
+    - gomodguard # deprecated duplicate of enabled gomodguard_v2
     - misspell
     - tagalign # выравнивание тегов структур
     - protogetter # 1 issue: использовать getter для proto полей

@@ -1,12 +1,13 @@
 package server
 
 import (
+	"google.golang.org/grpc"
+
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/api/protogen"
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/engine"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
 	"github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
-	"google.golang.org/grpc"
 )
 
 type grpcServer struct {
@@ -15,7 +16,7 @@ type grpcServer struct {
 
 	engine         *engine.WorkflowEngine
 	workerRegistry *orchestration.WorkerRegistry
-	eventBus       *event_bus.Bus
+	eventBus       *eventbus.Bus
 
 	log *logger.Logger
 }
@@ -25,7 +26,7 @@ func RegisterServer(
 	engine *engine.WorkflowEngine,
 	log *logger.Logger,
 	workerRegistry *orchestration.WorkerRegistry,
-	eventBus *event_bus.Bus,
+	eventBus *eventbus.Bus,
 ) {
 	grpcSerever := &grpcServer{
 		engine:         engine,

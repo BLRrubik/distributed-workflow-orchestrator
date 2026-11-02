@@ -64,7 +64,7 @@ func (g *grpcServer) ReportResult(ctx context.Context, request *protogen.ResultR
 			logger.String("task", request.GetTaskId()),
 		)
 
-		return resp, nil
+		return nil, fmt.Errorf("report task result: %w", err)
 	}
 
 	return resp, nil

@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 	"google.golang.org/grpc"
 
 	"github.com/blrrubik/distributed-workflow-orchestrator/common/logger"
@@ -17,6 +16,7 @@ import (
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/orchestration"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/scheduler"
 	"github.com/blrrubik/distributed-workflow-orchestrator/infrastructure/control-plane/server"
+	"github.com/blrrubik/distributed-workflow-orchestrator/pkg/event_bus"
 )
 
 func main() {
@@ -35,7 +35,7 @@ func main() {
 
 	go workerRegistry.Run(ctx)
 
-	eventBus := event_bus.NewBus(cfg.Bus.Capacity)
+	eventBus := eventbus.NewBus(cfg.Bus.Capacity)
 
 	workerClient := client.NewWorkerClient(workerRegistry)
 

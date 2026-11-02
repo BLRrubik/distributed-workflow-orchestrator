@@ -60,25 +60,6 @@ func (ws *WorkerService) Start(ctx context.Context) error {
 	return nil
 }
 
-func (ws *WorkerService) register(ctx context.Context) error {
-	resp, err := ws.clusterClient.Register(ctx, &protogen.RegisterRequest{
-		WorkerId:     ws.node.ID,
-		Address:      ws.node.Address,
-		Labels:       ws.node.Labels,
-		Capabilities: ws.node.Capabilities,
-		Capacity:     int32(ws.node.Capacity),
-	})
-	if err != nil {
-		return fmt.Errorf("register worker %s: %w", ws.node.ID, err)
-	}
-
-	if !resp.GetAccepted() {
-		return fmt.Errorf("registration rejected: %s", resp.GetReason())
-	}
-
-	return nil
-}
-
 // DispatchTask идемпотентен относительно (workflowID, taskID): повторный Dispatch
 // той же пары, пока задача ещё не доисполнилась успехом, — no-op (nil, не ошибка).
 // Это важно: если вернуть ошибку, scheduler интерпретирует её как провал и может
@@ -200,4 +181,23 @@ func (ws *WorkerService) sendHeartbeat(ctx context.Context) {
 	ws.suspended.Store(false)
 
 	ws.log.Info("worker re-registered successfully", logger.String("worker_id", ws.node.ID))
+}
+
+func (ws *WorkerService) register(ctx context.Context) error {
+	resp, err := ws.clusterClient.Register(ctx, &protogen.RegisterRequest{
+		WorkerId:     ws.node.ID,
+		Address:      ws.node.Address,
+		Labels:       ws.node.Labels,
+		Capabilities: ws.node.Capabilities,
+		Capacity:     int32(ws.node.Capacity),
+	})
+	if err != nil {
+		return fmt.Errorf("register worker %s: %w", ws.node.ID, err)
+	}
+
+	if !resp.GetAccepted() {
+		return fmt.Errorf("registration rejected: %s", resp.GetReason())
+	}
+
+	return nil
 }
